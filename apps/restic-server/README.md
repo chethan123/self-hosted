@@ -71,21 +71,31 @@ no FUSE, no capability grants. It is not zero-setup, though. These must exist fi
    first time Caddy starts:
    ```bash
    docker compose up -d caddy
-   cp volumes/caddy/pki/authorities/local/root.crt /path/to/self-hosted/global-caddy/backup-ca.crt
-   # commit global-caddy/backup-ca.crt
+   cp volumes/caddy/pki/authorities/local/root.crt /path/to/self-hosted/global-caddy/ca/backup-ca.crt
+   # commit global-caddy/ca/backup-ca.crt
    ```
    Repeat this whenever `volumes/caddy` is lost — the CA regenerates and the old root stops
    matching, so the Global Caddy returns 502 for `backup.<domain>` until the new root is
    re-committed and redeployed.
-6. **Global-Caddy route fragment + CA mount.** `global-caddy/sites/backup.caddy` (already added
-   by this change) pins `backup-ca.crt`, and `global-caddy/docker-compose.yml` now bind-mounts
-   `./backup-ca.crt` into the container. That file **must exist on disk from step 5 before the
-   Global Caddy container is (re)created** — a missing bind-mount source fails container
-   creation, taking down routing for every other app on that VM, not just this one. Once it
-   exists, on every Caddy VM:
+6. **Enable the Global-Caddy route.** `global-caddy/sites/backup.caddy` ships **commented out**
+   on purpose: it pins the CA, and Caddy fails its entire config load if `tls_trusted_ca_certs`
+   names a file that is not a readable certificate — which would take down every route on that
+   VM, not just this one. A Caddy VM that pulls before step 5 is therefore unaffected. Once
+   `global-caddy/ca/backup-ca.crt` is committed, uncomment the block and, on every Caddy VM:
    ```bash
-   docker compose up -d   # recreate — the new mount needs this; `caddy reload` alone won't pick it up
+   docker exec caddy caddy reload --config /etc/caddy/Caddyfile
    ```
+   **Reload, not `docker compose up -d`.** Both `./ca` and `./sites` are directory bind mounts,
+   so adding the certificate and uncommenting the route change no Compose service definition —
+   `up -d` sees nothing to do and leaves the running Caddy on its old config, still answering
+   `backup.<domain>` with the fallback 404. The directory mounts make both files visible inside
+   the container immediately, so a config reload is all that's needed. (The one exception: if
+   this VM has not yet deployed the commit that *added* the `./ca` mount, run `docker compose up
+   -d` first — that one does change the service definition.)
+   The CA is a *directory* mount (`./ca:/etc/caddy/ca:ro`), not a single file: Compose
+   creates a missing bind-mount source as a **directory**, so a single-file mount of a
+   not-yet-bootstrapped cert would silently produce `backup-ca.crt/` and fail Caddy later, with a
+   stray directory to clean up first. An empty `./ca` always mounts cleanly.
 7. **Retire the old route.** Once this package is live, delete
    `global-caddy/sites/restic.caddy` and decommission `10.1.1.200` on every Caddy VM. **Not done
    by this change** — it's a manual cutover step for whoever deploys this, and Backrest
