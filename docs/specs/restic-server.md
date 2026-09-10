@@ -18,7 +18,7 @@ package. `global-caddy/sites/` routes two relevant hosts today:
 
 | Route | Target | Status |
 |---|---|---|
-| `restic.{$BASE_DOMAIN}` | `10.1.1.200:80` | existing, **unmodelled** — no `apps/` package |
+| `restic.{$BASE_DOMAIN}` | `10.1.1.200:80` | existing; its `apps/restic/` package was deleted in `b6d14a4` ("Removed restic to recreate") at the head of this branch |
 | `backrest.{$BASE_DOMAIN}` | `10.1.1.250:9898` | existing Backrest (restic orchestrator UI), **unmodelled** |
 
 More broadly, `global-caddy/sites/` carries ~33 host fragments against 3 app packages, so the
@@ -558,3 +558,13 @@ authoring environment.
   `docker/entrypoint.sh`
 - This repo: ADR-0001, ADR-0002, ADR-0003, ADR-0005, `CLAUDE.md`, `CONTEXT.md`,
   `global-caddy/`, `apps/_template/`, `apps/jellyfin/`
+- **The superseded package**, `git show b6d14a4^:apps/restic/…` — worth reading before
+  implementing. It independently reached the same `restic/rest-server:0.14.0` pin, `user:
+  "1000:1000"`, `PASSWORD_FILE=/run/secrets/htpasswd`, `OPTIONS=--append-only --private-repos`,
+  and a `storage_targets` schema in which one `path` is simultaneously the URL segment, the
+  directory under `/data` and the htpasswd username. It differs in reaching cloud storage
+  through host `rclone mount` FUSE units with `rshared` propagation — the approach D1 rejects —
+  and its own compose comment records why: "Docker's create_host_path check can't catch an
+  unmounted FUSE target — the mountpoint dir still exists, just empty — so without rshared,
+  backups would silently land on local disk instead of pcloud." That is the D1 failure mode,
+  observed in production rather than theorised.
