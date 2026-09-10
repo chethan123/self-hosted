@@ -9,7 +9,12 @@
 # To enable (see docs/specs/restic-server.md §12.1 and apps/restic-server/README.md):
 #   1. On the restic-server VM:  docker compose up -d caddy
 #   2. Copy volumes/caddy/pki/authorities/local/root.crt to global-caddy/ca/backup-ca.crt
-#   3. Commit it, uncomment the block below, then on every Caddy VM: docker compose up -d
+#   3. Commit it, uncomment the block below, then on every Caddy VM:
+#        docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+#
+# Reload, not `docker compose up -d`: ./ca and ./sites are directory bind mounts, so neither the
+# new certificate nor this uncommented block changes the Compose service definition — `up -d`
+# would find nothing to do and leave Caddy on its old config, still 404ing this host.
 #
 # Repeat all three if the sidecar's volumes/caddy is ever lost: `tls internal` regenerates its
 # root, the old one stops matching, and this host 502s until the new root is redeployed.

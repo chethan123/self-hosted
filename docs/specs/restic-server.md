@@ -527,10 +527,13 @@ Goal 5 promises no host-*daemon* prerequisites, not zero setup. These must exist
 - The Global-Caddy route fragment installed on every Caddy VM.
 - **Sidecar CA bootstrap, in this order:** start the sidecar once; copy Caddy's internal root
   from `volumes/caddy/pki/authorities/local/root.crt` to `global-caddy/ca/backup-ca.crt`; commit
-  it; **uncomment the block in `global-caddy/sites/backup.caddy`**; then `docker compose up -d`
-  on every Caddy VM (a reload alone won't pick up the new mount). Repeat all of it if the
-  sidecar's `volumes/caddy` is ever lost — the CA regenerates and the old root stops matching,
-  and this host 502s until the new one is redeployed.
+  it; **uncomment the block in `global-caddy/sites/backup.caddy`**; then reload on every Caddy
+  VM with `docker exec caddy caddy reload --config /etc/caddy/Caddyfile`. **Reload, not
+  `docker compose up -d`** — `./ca` and `./sites` are directory bind mounts, so neither the new
+  certificate nor the uncommented fragment changes the Compose service definition, and `up -d`
+  would find nothing to do and leave Caddy on its old config. Repeat all of it if the sidecar's
+  `volumes/caddy` is ever lost — the CA regenerates and the old root stops matching, and this
+  host 502s until the new one is redeployed.
 - Retire `global-caddy/sites/restic.caddy` and decommission `10.1.1.200`.
 
 ## 13. Configuration values
