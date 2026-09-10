@@ -1,0 +1,21 @@
+# Sidecar Caddy — app-specific edge. Plain HTTP on :80; TLS is handled upstream by Global Caddy.
+# This is where per-app inbound hardening lives and gets tightened over time.
+:80 {
+	# Inert for a REST API, kept for consistency with every other app.
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+	}
+
+	# --- deliberately NOT here ---
+	# * No path allow-list: --private-repos ties the Basic-auth username to the first path
+	#   segment; an unknown /<target>/ is already a 401, can't create a stray repo. A list would
+	#   be a third place to edit per new target.
+	# * No `request_body { max_size }`: restic streams multi-MB pack files every backup; a limit
+	#   breaks writes, protects nothing.
+	# * No basicauth: rest-server owns auth (htpasswd); Caddy passes Authorization through.
+
+	reverse_proxy restic:8000
+}

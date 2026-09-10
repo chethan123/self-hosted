@@ -1,0 +1,88 @@
+# No `secrets:` block — no high-value secret in this stack. Its only credential, the admin
+# account, lives in /config's own SQLite database.
+services:
+
+  # --- Sidecar Caddy: the ONLY host-published port on this VM ---
+  # Single subdomain — no host matcher, no BASE_DOMAIN (see ./Caddyfile).
+  caddy:
+    image: caddy:2.8-alpine
+    # `caddy-<app>`, not plain `caddy` — that name belongs to the Global Caddy.
+    container_name: caddy-audiobookshelf
+    restart: unless-stopped
+    networks: [edge, frontend]
+    ports:
+      - "${SIDECAR_PORT:-80}:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./volumes/caddy:/data
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  # --- Audiobookshelf: vanilla image, so identity is `user:` (never PUID/PGID) ---
+  audiobookshelf:
+    # Pinned to what `:latest` resolved to at migration time.
+    image: ghcr.io/advplyr/audiobookshelf:2.35.1
+    container_name: audiobookshelf
+    restart: unless-stopped
+    # `edge`: needs_egress — metadata lookups, podcast episode downloads.
+    networks: [edge, frontend]
+    # Hardcoded, not ${PUID}:${PGID} — must match ownership of the NFS exports and ./volumes
+    # bind mounts; drift breaks writes silently.
+    #
+    # Listens on :80 as uid 975 — works only because Docker defaults
+    # net.ipv4.ip_unprivileged_port_start=0 in containers, not a capability; cap_drop: [ALL]
+    # doesn't touch it. See README if a host ever overrides that sysctl.
+    user: "975:975"
+    environment:
+      - TZ=${TZ}
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=1024m   # ffmpeg/ffprobe scratch + web-UI upload staging
+    volumes:
+      # Must NOT be NFS — holds the SQLite db; SQLite over NFS corrupts (upstream docs).
+      - ./volumes/audiobookshelf/config:/config
+      # Covers, streams, downloads, backups, logs — churn-heavy cache; kept local to keep scans
+      # off the NAS wire.
+      - ./volumes/audiobookshelf/metadata:/metadata
+      # Both :rw — podcasts: episode downloads land here. audiobooks: write-back (embed
+      # metadata, m4b merge, uploads, renames) modifies files in place.
+      - audiobooks:/audiobooks:rw
+      - podcasts:/podcasts:rw
+    mem_limit: 2g          # ffprobe spike scanning a large library; tune to the VM
+    cpus: "2.0"
+    pids_limit: 256
+    logging:
+      driver: "json-file"
+      options: { max-file: "5", max-size: "10m" }
+    # Also proves the NFS mount is alive — `soft` fails fast rather than hangs, so a dead NAS
+    # shows up here, not as an empty-looking library.
+    healthcheck:
+      test: [ "CMD-SHELL", "timeout 5 ls /audiobooks >/dev/null 2>&1 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  edge: {}                     # bridge: sidecar's published port; egress for audiobookshelf
+  frontend: {internal: true}   # sidecar <-> audiobookshelf, no internet
+  # No `backend`: no database (SQLite lives in /config).
+
+# NFS-backed named volumes. Mounted by the VM host's kernel, so they work regardless of network
+# isolation. Always `soft` — `hard` has caused hangs here. The daemon mounts each export rw;
+# read-only is enforced per-container at the mount with :rw/:ro (see audiobookshelf above).
+volumes:
+  audiobooks:
+    driver: local
+    driver_opts:
+      type: "nfs"
+      o: "addr=${NFS_SERVER},rw,soft,timeo=30,retrans=3,intr"
+      device: "${NFS_SERVER}:/export/audiobooks"
+  podcasts:
+    driver: local
+    driver_opts:
+      type: "nfs"
+      o: "addr=${NFS_SERVER},rw,soft,timeo=30,retrans=3,intr"
+      device: "${NFS_SERVER}:/export/podcasts"

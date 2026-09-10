@@ -1,0 +1,106 @@
+# Machine-readable contract for this app. Drives global-route generation, linting, and docs.
+# `/onboard-app` fills the routing fields; `/harden-container` fills caps_added / tmpfs_paths.
+name: jellyfin
+hostname: tv              # primary subdomain; full host is <hostname>.{BASE_DOMAIN}
+vm_ip: 10.1.1.2           # reserved static IP of this app's VM
+sidecar_port: 80          # the ONE host port the Sidecar Caddy publishes
+
+needs_egress: true        # gluetun, metube and rclone-webdav are on `edge`
+secrets_mode: hybrid      # env | file-secrets | hybrid  (WireGuard key is the one file-secret)
+
+# Routing — app-specific schema extension: FOUR subdomains behind the single sidecar_port above,
+# demultiplexed by Host (./Caddyfile). Every global-caddy fragment targets 10.1.1.2:80; `upstream`
+# is the sidecar's internal target, not anything reachable from the LAN.
+routes:
+  - hostname: tv
+    upstream: gluetun:8096      # Jellyfin, in gluetun's namespace
+  - hostname: metube
+    upstream: metube:8081
+  - hostname: jellyshare
+    upstream: rclone-webdav:8080
+  - hostname: jellystats
+    upstream: jellystat:3000
+
+# NOT YET VERIFIED — /harden-container has never run against this app; these are the migration's
+# starting posture, not a measured result. `read_only: false` entries carry a recorded reason;
+# the `read_only: true` ones are the optimistic default and the likeliest first-boot failures.
+hardening_verified: false
+
+services:
+  caddy:
+    image_type: vanilla       # caddy:2.8-alpine
+    read_only: false          # house default for the sidecar; not yet tightened anywhere
+    caps_added: []
+    tmpfs_paths: []
+  gluetun:
+    image_type: vanilla       # qmcgaw/gluetun:v3.41.1
+    read_only: false          # rewrites iptables state and servers.json at runtime
+    caps_added: [NET_ADMIN]   # irreducible — creates and routes the WireGuard tunnel
+    tmpfs_paths: []
+    devices: [/dev/net/tun]
+  jellyfin:
+    image_type: linuxserver   # lscr.io/linuxserver/jellyfin:10.11.11 — PUID/PGID 975, never `user:`
+    read_only: false          # s6-overlay writes across the rootfs during init
+    caps_added: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]   # from the source stack
+    tmpfs_paths: [/tmp]       # 2048m, ffmpeg transcode scratch
+    devices: [/dev/dri]       # VAAPI hardware transcoding
+    network_mode: service:gluetun   # no networks of its own; addressed as gluetun:8096
+    cpus_unset: true          # deliberate — transcoding should use every core
+  metube:
+    image_type: vanilla       # ghcr.io/alexta69/metube:2026.07.21 — user 975:975
+    read_only: true           # UNVERIFIED
+    caps_added: []
+    tmpfs_paths: [/tmp]
+  rclone-webdav:
+    image_type: vanilla       # alpine:3.24.1 + `apk add rclone` at every start
+    read_only: false          # apk installs into the rootfs
+    runs_as_root: true        # apk requires it; rclone serves as 975:975 via --uid/--gid
+    caps_added: []            # UNVERIFIED — if apk fails, try CHOWN, FOWNER, DAC_OVERRIDE
+    tmpfs_paths: []
+    unpinned_dependency: rclone   # whatever Alpine ships the day it restarts
+  jellystat:
+    image_type: vanilla       # cyfershepard/jellystat:1.1.11
+    read_only: true           # UNVERIFIED
+    caps_added: []
+    tmpfs_paths: [/tmp]
+  jellystat-db:
+    image_type: vanilla       # postgres:18.4-alpine
+    read_only: true
+    caps_added: [CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
+    tmpfs_paths: [/tmp, /run]
+
+# NFS-backed volumes. Access is enforced at the container mount (:ro default, :rw opt-in); the
+# daemon always mounts NFS `rw` with `soft` options.
+#
+# Schema extension: two exports are mounted by two services with different rights, so each entry
+# carries a `mounts` list instead of the standard single mount_path/access pair.
+nfs_volumes:
+  - name: jelly-storage
+    server: 192.168.86.250        # NFS_SERVER
+    export: /export/jellyfin
+    mounts:
+      - service: jellyfin
+        mount_path: /media
+        access: rw                # delete-from-UI, write-back metadata
+  - name: youtube
+    server: 192.168.86.250
+    export: /export/youtube
+    mounts:
+      - service: metube
+        mount_path: /downloads
+        access: rw
+      - service: jellyfin
+        mount_path: /youtube
+        access: ro                # playback only
+  - name: jelly-share
+    server: 192.168.86.250
+    export: /export/jellyfin-share
+    mounts:
+      - service: rclone-webdav
+        mount_path: /data
+        access: rw                # WebDAV clients upload here
+      - service: jellyfin
+        mount_path: /shared
+        access: ro                # playback only
+
+owner: chethan

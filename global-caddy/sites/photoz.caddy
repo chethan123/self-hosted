@@ -1,0 +1,4 @@
+@photoz host photoz.{$BASE_DOMAIN}
+handle @photoz {
+	reverse_proxy 100.94.153.17
+}

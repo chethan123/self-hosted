@@ -1,0 +1,4 @@
+@backrest host backrest.{$BASE_DOMAIN}
+handle @backrest {
+	reverse_proxy 10.1.1.250:9898
+}

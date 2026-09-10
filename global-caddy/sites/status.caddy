@@ -1,0 +1,4 @@
+@status host status.{$BASE_DOMAIN}
+handle @status {
+	reverse_proxy 192.168.86.250:8080
+}

@@ -1,0 +1,4 @@
+@getbooks host getbooks.{$BASE_DOMAIN}
+handle @getbooks {
+	reverse_proxy 10.1.1.99:8787
+}

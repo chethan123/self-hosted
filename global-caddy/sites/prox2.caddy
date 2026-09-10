@@ -1,0 +1,4 @@
+@prox2 host prox2.{$BASE_DOMAIN}
+handle @prox2 {
+	reverse_proxy 192.168.86.22:8006
+}

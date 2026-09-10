@@ -1,0 +1,4 @@
+@nfs host nfs.{$BASE_DOMAIN}
+handle @nfs {
+	reverse_proxy 192.168.86.250:80
+}

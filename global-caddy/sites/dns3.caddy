@@ -1,0 +1,4 @@
+@dns3 host dns3.{$BASE_DOMAIN}
+handle @dns3 {
+	reverse_proxy 192.168.86.33:8080
+}

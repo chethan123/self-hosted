@@ -1,0 +1,93 @@
+# Global Caddy config. The base domain is parameterized ({$BASE_DOMAIN}) so no real domain is
+# committed; the real value lives in the gitignored .env on each Caddy VM. The Cloudflare DNS
+# token is a file-secret (never committed) — see docker-compose.yml + README.md.
+#
+# TLS strategy: ONE wildcard cert per zone. Single-label subdomains share the *.{$BASE_DOMAIN}
+# cert and are routed by host-matcher fragments imported from sites/. Two-label zones
+# (*.blr, *.drive) need their own wildcard cert, so they live in dedicated blocks below.
+
+{
+	email {$ACME_EMAIL}
+}
+
+# ── Shared TLS block ────────────────────────────────────────────────────────────────────────
+# DNS-01 (Cloudflare) issues the wildcard cert. Token read from the file-secret at
+# /run/secrets/dns_token. Needs the cloudflare DNS module (Dockerfile).
+(tls_wildcard) {
+	tls {
+		dns cloudflare {file./run/secrets/dns_token}
+		protocols tls1.2 tls1.3
+	}
+}
+
+# ── Shared security headers ─────────────────────────────────────────────────────────────────
+(security_headers) {
+	header {
+		# Prevent clickjacking
+		X-Frame-Options "SAMEORIGIN"
+		# Prevent MIME-type sniffing
+		X-Content-Type-Options "nosniff"
+		# Legacy XSS protection
+		X-XSS-Protection "1; mode=block"
+		# Enforce HTTPS
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		# Limit referrer leakage
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Lock down powerful browser features
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		# Don't advertise the server
+		-Server
+	}
+}
+
+# ── Primary zone: one *.{$BASE_DOMAIN} wildcard cert, shared by every single-label subdomain ──
+# Per-app routes are host-matcher fragments in sites/<name>.caddy, imported here.
+# `/onboard-app` appends a fragment per app (see sites/README pattern).
+*.{$BASE_DOMAIN} {
+	import tls_wildcard
+	import security_headers
+
+	import sites/*.caddy
+
+	# Unmatched subdomains
+	handle {
+		respond "Service not found" 404
+	}
+}
+
+# ── Two-label zone: *.blr.{$BASE_DOMAIN} (own wildcard cert) ─────────────────────────────────
+# Upstreams are http hosts behind Tailscale; the Host-header override preserves the backend vhost.
+*.blr.{$BASE_DOMAIN} {
+	import tls_wildcard
+	import security_headers
+
+	@qbit host qbit.blr.{$BASE_DOMAIN}
+	handle @qbit {
+		reverse_proxy http://100.87.160.34 {
+			header_up Host qbit.blr.{$BASE_DOMAIN}
+		}
+	}
+
+	@tv host tv.blr.{$BASE_DOMAIN}
+	handle @tv {
+		reverse_proxy http://100.87.160.34 {
+			header_up Host tv.blr.{$BASE_DOMAIN}
+		}
+	}
+
+	handle {
+		respond "Service not found" 404
+	}
+}
+
+# ── Two-label zone: *.drive.{$BASE_DOMAIN} (own wildcard cert) ───────────────────────────────
+*.drive.{$BASE_DOMAIN} {
+	import tls_wildcard
+	import security_headers
+	reverse_proxy 10.1.1.5:80
+}
+
+# ── Plain-HTTP → HTTPS redirect ─────────────────────────────────────────────────────────────
+http://{$BASE_DOMAIN}, http://*.{$BASE_DOMAIN} {
+	redir https://{host}{uri} permanent
+}

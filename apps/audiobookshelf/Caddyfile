@@ -1,0 +1,17 @@
+# Sidecar Caddy — app-specific edge. Plain HTTP on :80; TLS is handled upstream by Global Caddy.
+#
+# Single subdomain — no host matcher, no BASE_DOMAIN needed (unlike jellyfin's four subdomains).
+:80 {
+	# --- security headers (tighten per app) ---
+	# Repeated from the Global Caddy so they hold for a request that reaches this VM on the LAN.
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+	}
+
+	# Caddy upgrades the socket.io WebSocket automatically — progress sync and live scan ride
+	# it; a proxy that drops Upgrade breaks them silently.
+	reverse_proxy audiobookshelf:80
+}

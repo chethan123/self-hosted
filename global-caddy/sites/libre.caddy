@@ -1,0 +1,4 @@
+@libre host libre.{$BASE_DOMAIN}
+handle @libre {
+	reverse_proxy 10.1.1.99:3000
+}

@@ -1,0 +1,6 @@
+# Proxmox web UI speaks HTTPS on :8006. Upstream scheme preserved from the original config.
+# NOTE: if the Proxmox node uses a self-signed cert, add `transport http { tls_insecure_skip_verify }`.
+@prox1 host prox1.{$BASE_DOMAIN}
+handle @prox1 {
+	reverse_proxy https://192.168.86.201:8006
+}

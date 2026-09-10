@@ -1,0 +1,5 @@
+# Seafile. Large file uploads ride this route, so no body limit is set anywhere in the chain.
+@files host files.{$BASE_DOMAIN}
+handle @files {
+	reverse_proxy 10.1.1.8:80
+}

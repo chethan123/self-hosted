@@ -1,0 +1,22 @@
+# --- Secrets & environment (NEVER commit real values) ---
+.env
+.env.*
+!.env.example
+# `secrets/*` alone is root-anchored (has an internal slash), so it would NOT cover
+# `global-caddy/secrets/` or `apps/*/secrets/`. The `**/` variants close that gap at every level.
+secrets/*
+!secrets/.gitkeep
+**/secrets/*
+!**/secrets/.gitkeep
+
+# --- Runtime state (per-service bind mounts) ---
+volumes/
+
+# --- Claude Code local (personal) settings ---
+.claude/settings.local.json
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+*.swp
+*~

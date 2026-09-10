@@ -1,0 +1,4 @@
+@syncthingext host syncthing-ext.{$BASE_DOMAIN}
+handle @syncthingext {
+	reverse_proxy 192.168.86.50:8384
+}

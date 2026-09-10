@@ -1,0 +1,15 @@
+# Sidecar Caddy: app edge, plain :80 — TLS terminates upstream at Global Caddy (ADR-0001).
+# Per-app inbound hardening lives here; tighten over time.
+:80 {
+	# --- security headers (tighten per app) ---
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+	}
+
+	# --- optional: forward_auth (Authelia/Authentik), rate limits, path allow-lists ---
+
+	reverse_proxy example-app:8080   # app service:port
+}

@@ -1,0 +1,51 @@
+# Sidecar Caddy — app-specific edge. Plain HTTP on :80; TLS is handled upstream by Global Caddy.
+#
+# One subdomain: no host matcher, no BASE_DOMAIN dependency (contrast jellyfin, which demuxes
+# four and needs it).
+#
+# Replaces upstream's caddy.yml (caddy-docker-proxy), rejected here for requiring
+# /var/run/docker.sock. Route table transcribed from
+# https://manual.seafile.com/13.0/setup/use_other_reverse_proxy/ — reduces to a single upstream
+# for this core-only package, since /sdoc-server, /socket.io and /notification only exist with
+# SeaDoc and the notification server deployed.
+:80 {
+	# --- security headers (tighten per app) ---
+	# Repeated from the Global Caddy so they hold for a request that reaches this VM on the LAN.
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+	}
+
+	# In-container nginx on :80 fronts seahub (Django) + seaf-server's /seafhttp — proxying `/`
+	# covers the whole app, no path rules needed.
+	#
+	# Caddy preserves the inbound Host header by default (nginx doesn't); Seahub needs that for
+	# correct absolute URLs.
+	reverse_proxy seafile:80 {
+		# CRITICAL — likeliest cause of a broken deployment if removed.
+		#
+		# bootstrap.py computes `proto` from SEAFILE_SERVER_PROTOCOL then discards it (dead code) —
+		# never writes SERVICE_URL or CSRF_TRUSTED_ORIGINS. Seahub derives its public scheme from
+		# request headers instead. Caddy doesn't trust inbound X-Forwarded-* by default, so without
+		# this the sidecar overwrites Global Caddy's `X-Forwarded-Proto: https` with `http` (this
+		# hop's own scheme) — share links, avatars, OAuth redirects come out http://, and Django 5's
+		# CSRF check 403s logins.
+		#
+		# Hardcoded, not passed through: the public entrypoint is always https — a fact about the
+		# deployment, not this hop.
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Host {host}
+	}
+
+	# Not configured, on purpose:
+	# - Upload limits: upstream's nginx sets `client_max_body_size 0` (unlimited); Caddy has no
+	#   body-size limit by default — already matches.
+	# - Read timeout: upstream sets `proxy_read_timeout 310s` for slow large-file PUTs; Caddy's
+	#   reverse_proxy has no response timeout by default — equivalent.
+	# - WebSocket upgrades: Caddy handles them transparently. No websocket endpoint in the
+	#   core-only stack anyway (SeaDoc's /socket.io, notification server's /notification).
+	# - /seafdav (WebDAV): disabled in seafdav.conf by default; enabling it later serves from the
+	#   same in-container nginx on :80 — no rule needed here.
+}

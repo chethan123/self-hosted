@@ -1,0 +1,4 @@
+@paper host paper.{$BASE_DOMAIN}
+handle @paper {
+	reverse_proxy 10.1.1.6:80
+}

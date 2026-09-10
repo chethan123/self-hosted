@@ -1,0 +1,9 @@
+# Secret-leak prevention. Install once:
+#   pip install pre-commit && pre-commit install
+# Then every `git commit` is scanned; a detected secret blocks the commit.
+# gitleaks is feature-complete (security patches only) but remains the standard.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.2
+    hooks:
+      - id: gitleaks

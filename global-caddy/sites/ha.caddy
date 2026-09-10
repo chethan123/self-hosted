@@ -1,0 +1,7 @@
+# Home Assistant needs streaming responses flushed immediately (websocket/EventSource).
+@ha host ha.{$BASE_DOMAIN}
+handle @ha {
+	reverse_proxy 192.168.86.34:8123 {
+		flush_interval -1
+	}
+}

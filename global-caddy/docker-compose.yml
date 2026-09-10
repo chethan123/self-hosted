@@ -1,0 +1,37 @@
+# Global Caddy — public front door. Deploy (sparse-checkout `global-caddy/`) to each Caddy VM.
+# Terminates TLS with DNS-01 (Cloudflare) and routes each subdomain to an app's Sidecar Caddy.
+# Build the image from ./Dockerfile (xcaddy + cloudflare DNS module) — stock caddy:2 lacks it.
+services:
+  caddy:
+    build: .
+    image: caddy-cloudflare:2.10        # local build tag (Dockerfile: caddy:2.10 + cloudflare DNS)
+    container_name: caddy
+    restart: unless-stopped
+    env_file: [.env]                    # BASE_DOMAIN, ACME_EMAIL
+    secrets: [dns_token]                # Cloudflare API token -> /run/secrets/dns_token
+    # Global Caddy is the ONLY service in the monorepo allowed to publish host ports.
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"                   # HTTP/3
+    # ── Hardening (ADR-0003) ──
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]         # bind :80/:443
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 256
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./sites:/etc/caddy/sites:ro
+      - ./volumes/data:/data            # certs / ACME state — MUST persist
+      - ./volumes/config:/config        # Caddy autosave config — MUST persist
+
+secrets:
+  dns_token:
+    file: ./secrets/dns_token.txt       # gitignored; create on each Caddy VM (see README)
+
+# Global Caddy binds host ports directly; it needs no user-defined networks.

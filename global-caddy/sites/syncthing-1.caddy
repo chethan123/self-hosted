@@ -1,0 +1,4 @@
+@syncthing1 host syncthing-1.{$BASE_DOMAIN}
+handle @syncthing1 {
+	reverse_proxy 10.1.1.254:8384
+}

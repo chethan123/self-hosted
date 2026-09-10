@@ -1,0 +1,38 @@
+# Machine-readable contract: drives global-route generation, linting, docs.
+# `/onboard-app` fills routing fields; `/harden-container` fills caps_added / tmpfs_paths.
+name: example-app
+hostname: photos          # subdomain only; full host = <hostname>.{BASE_DOMAIN}
+vm_ip: 10.0.0.42          # reserved static IP
+sidecar_port: 80          # host port sidecar publishes
+
+needs_egress: false       # true -> app joins `edge` network
+secrets_mode: hybrid      # env | file-secrets | hybrid
+
+# Keys must match compose service names.
+services:
+  caddy:
+    image_type: vanilla
+    read_only: false      # house default; sidecar not yet hardened
+    caps_added: []
+    tmpfs_paths: []
+  example-app:            # = app slug, never `app` — sidecar's DNS target
+    image_type: vanilla   # vanilla | self-built | linuxserver
+    read_only: true
+    caps_added: []        # minimum caps, from hardening bring-up loop
+    tmpfs_paths: []       # writable paths unlocked (e.g. /tmp, /run)
+  db:
+    image_type: vanilla
+    read_only: true
+    caps_added: [CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
+    tmpfs_paths: [/tmp, /run]
+
+# NFS volumes (optional). Access enforced at the container mount (:ro default, :rw opt-in);
+# daemon always mounts NFS `rw` with `soft` options.
+# nfs_volumes:
+#   - name: backup-storage
+#     server: 192.168.86.250       # static IP is fine
+#     export: /export/backup
+#     mount_path: /data/backup
+#     access: ro                   # ro (default) | rw  -> drives the :ro/:rw mount suffix
+
+owner: chethan

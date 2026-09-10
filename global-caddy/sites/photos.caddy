@@ -1,0 +1,4 @@
+@photos host photos.{$BASE_DOMAIN}
+handle @photos {
+	reverse_proxy 10.1.1.4:80
+}

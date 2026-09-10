@@ -1,0 +1,4 @@
+@getmovies host getmovies.{$BASE_DOMAIN}
+handle @getmovies {
+	reverse_proxy 10.1.1.99:7878
+}

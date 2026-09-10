@@ -1,0 +1,4 @@
+@speed host speed.{$BASE_DOMAIN}
+handle @speed {
+	reverse_proxy 192.168.86.31:8888
+}

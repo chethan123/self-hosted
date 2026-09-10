@@ -1,0 +1,43 @@
+# Sidecar Caddy — app-specific edge. Plain HTTP on :80; TLS is handled upstream by Global Caddy.
+#
+# Four subdomains off ONE published port: the Global Caddy forwards the original Host, so routing
+# here is by host matcher, not a listener per service — which is what leaves exactly one
+# LAN-exposed port on this VM. {$BASE_DOMAIN} comes from the gitignored .env; unset, every
+# matcher below silently misses and requests fall through to the 404. Check .env first on a 404.
+:80 {
+	# --- security headers (tighten per app) ---
+	# Repeated from the Global Caddy so they hold for a request that reaches this VM on the LAN.
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+	}
+
+	# Upstream is `gluetun`, not `jellyfin` — Jellyfin runs in gluetun's namespace and has no
+	# address of its own.
+	@tv host tv.{$BASE_DOMAIN}
+	handle @tv {
+		reverse_proxy gluetun:8096
+	}
+
+	@metube host metube.{$BASE_DOMAIN}
+	handle @metube {
+		reverse_proxy metube:8081
+	}
+
+	# rclone owns auth (--user/--pass); Caddy passes Authorization through untouched.
+	@jellyshare host jellyshare.{$BASE_DOMAIN}
+	handle @jellyshare {
+		reverse_proxy rclone-webdav:8080
+	}
+
+	@jellystats host jellystats.{$BASE_DOMAIN}
+	handle @jellystats {
+		reverse_proxy jellystat:3000
+	}
+
+	handle {
+		respond "Service not found" 404
+	}
+}

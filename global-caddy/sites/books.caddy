@@ -1,0 +1,4 @@
+@books host books.{$BASE_DOMAIN}
+handle @books {
+	reverse_proxy 10.1.1.7:80
+}

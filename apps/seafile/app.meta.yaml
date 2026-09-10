@@ -1,0 +1,93 @@
+# Machine-readable contract for this app. Drives global-route generation, linting, and docs.
+# `/onboard-app` fills the routing fields; `/harden-container` fills caps_added / tmpfs_paths.
+name: seafile
+hostname: files           # subdomain only; full host is <hostname>.{BASE_DOMAIN}
+vm_ip: 10.1.1.8           # reserved static IP of this app's VM
+sidecar_port: 80          # the ONE host port the Sidecar Caddy publishes
+
+# Verified, not assumed: CE 13.0 bakes server binaries + pip deps in at build time; none of
+# scripts_13.0/{enterpoint.sh,start.py,bootstrap.py,setup-seafile-mysql.py,upgrade.py} call out.
+# Only SMTP would need egress — documented-but-disabled in .env.example.
+needs_egress: false
+
+# Forced, not chosen: the image reads every credential via os.getenv (bootstrap.py), no *_FILE
+# convention — file-secrets would cover only MariaDB while seafile still needed the plain value.
+secrets_mode: env
+
+# NOT YET VERIFIED: /harden-container has never run against this app. Upstream ships with no
+# cap_drop, no read_only, full default capabilities — every hardening line here is new.
+hardening_verified: false
+
+services:
+  caddy:
+    image_type: vanilla       # caddy:2.8-alpine
+    read_only: false          # house default for the sidecar; not yet tightened anywhere
+    caps_added: []
+    tmpfs_paths: []
+  seafile:
+    image_type: vanilla       # seafileltd/seafile-mc:13.0.25
+    # DEVIATION from ADR-0003. Not achievable on this image:
+    #   - phusion baseimage; runit creates supervise/ dirs in place under
+    #     /etc/service/{nginx,syslog-ng,cron} — can't tmpfs-mount without masking the run scripts
+    #   - enterpoint.sh mutates the image fs every boot: groupadd/useradd write
+    #     /etc/{passwd,group,shadow}, crontab writes /var/spool/cron, sed-edits
+    #     /scripts/logrotate-conf/seafile and seafile.sh
+    # /harden-container should re-attempt with targeted nested tmpfs mounts before accepting this
+    # as permanent.
+    read_only: false
+    # UNVERIFIED starting set:
+    #   CHOWN, FOWNER, DAC_OVERRIDE  enterpoint.sh chowns /opt/seafile + server dir;
+    #                                bootstrap.py moves conf/ccnet/seafile-data into /shared
+    #   SETUID, SETGID               `su seafile -c ...` in start.py; runit's setuser
+    #   KILL                         runit/my_init signalling supervised services
+    #   AUDIT_WRITE                  PAM audit record on `su`
+    caps_added: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL, AUDIT_WRITE]
+    tmpfs_paths: []
+    # Identity set by NON_ROOT=true in .env, not a compose `user:` — container must start as root
+    # so my_init can supervise its services and enterpoint.sh can useradd uid 8000; start.py then
+    # drops to it via `su seafile`. External `user:` breaks the bootstrap. Two-phase first boot
+    # (README); see enterpoint.sh's permission gate (passes if /shared/seafile is mode 777 or
+    # owned by seafile) and bootstrap.py:166.
+    non_root_mode: true
+    non_root_uid: 8000
+    # In-container nginx binds :80 as uid 8000 via Docker's default
+    # net.ipv4.ip_unprivileged_port_start=0, not CAP_NET_BIND_SERVICE. Same as audiobookshelf.
+    unprivileged_port_bind: true
+  db:
+    image_type: vanilla       # mariadb:10.11.18 — Seafile supports no other engine
+    read_only: true
+    caps_added: [CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
+    tmpfs_paths: [/tmp, /run/mysqld]
+  redis:
+    # redis:7.4.9-alpine, not 8.x: uid/gid only verifiable from source, and neither
+    # docker-library/redis nor redis/docker-library-redis publishes Dockerfiles past 7.4.
+    image_type: vanilla
+    read_only: true           # `--save "" --appendonly no`: pure cache, nothing written
+    caps_added: []            # `user: 999:1000` skips the entrypoint's root-only chown+gosu branch
+    tmpfs_paths: []
+
+# No nfs_volumes: all local under ./volumes/ by decision. Seafile's block store is many small
+# content-addressed chunks with commit/fs metadata alongside — latency/write-order sensitive —
+# and house NFS options are `soft`, which I/O-errors mid-write on a NAS blip. Recoverable via
+# fsck/gc, but avoidable. MariaDB datadir must never be on NFS regardless.
+#
+# Local state:
+#   ./volumes/seafile/seafile/conf          seafile.conf, ccnet.conf, seahub_settings.py
+#   ./volumes/seafile/seafile/seafile-data  the block store — the bulk
+#   ./volumes/seafile/seafile/seahub-data   avatars, thumbnails, custom logos
+#   ./volumes/seafile/seafile/logs          seaf-server / seahub / controller logs
+#   ./volumes/db                            MariaDB datadir
+#   ./volumes/caddy                         sidecar Caddy state
+
+# Deliberately not deployed (core-only). Each can be added later without data migration; SeaDoc
+# reuses seahub_db. Adding any means new sidecar routes — see ./Caddyfile for the transcribed
+# upstream route table.
+components_disabled:
+  - seadoc                 # /sdoc-server + /socket.io — collaborative .sdoc editing
+  - notification-server    # /notification — real-time push; clients poll instead
+  - seafile-ai             # needs an external LLM, so egress
+  - face-recognition
+  - onlyoffice
+  - collabora
+
+owner: chethan

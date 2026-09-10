@@ -1,0 +1,4 @@
+@drive host drive.{$BASE_DOMAIN}
+handle @drive {
+	reverse_proxy 10.1.1.5:80
+}

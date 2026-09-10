@@ -1,0 +1,4 @@
+@restic host restic.{$BASE_DOMAIN}
+handle @restic {
+	reverse_proxy 10.1.1.200:80
+}

@@ -1,0 +1,87 @@
+# Canonical scaffold: /onboard-app copies this to every new app. Bugs here propagate to all of them.
+#
+# Naming: app service = app slug, NEVER `app` — sidecar's DNS target. Every service sets
+# `container_name:` too, so `docker ps` matches across VMs: `caddy-<slug>` for sidecar, service
+# name verbatim otherwise. `/onboard-app` rewrites `example-app` to the real slug throughout.
+services:
+
+  # --- Sidecar Caddy: only host-published port on this VM ---
+  caddy:
+    image: caddy:2.8-alpine
+    # `caddy-<app>`, not `caddy` — reserved for Global Caddy.
+    container_name: caddy-example-app
+    restart: unless-stopped
+    networks: [edge, frontend]
+    ports:
+      - "${SIDECAR_PORT:-80}:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./volumes/caddy:/data
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  # Rename to the app slug — sidecar's `reverse_proxy` targets this name.
+  example-app:
+    image: ghcr.io/vendor/app:1.2.3          # pin real tag; or `build: .` for self-built
+    container_name: example-app
+    restart: unless-stopped
+    networks: [frontend, backend]            # + [edge] only when needs_egress=true
+    # Identity: vanilla/self-built use `user:`; linuxserver.io: delete `user:`, set PUID/PGID.
+    user: "1000:1000"
+    # environment:
+    #   - PUID=1000
+    #   - PGID=1000
+    env_file: [.env]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    # cap_add: []                            # min caps, from /harden-container
+    read_only: true                          # default on; flip false if it can't harden
+    tmpfs: []                                # writable paths from /harden-container, e.g. /tmp, /run
+    mem_limit: 1g
+    cpus: "1.0"
+    pids_limit: 200
+    volumes:
+      - ./volumes/app:/data
+      # NFS volume: define under top-level `volumes:` below, record in app.meta.yaml.
+      # Read-only enforced HERE at the mount — append :rw only if app must write.
+      # - backup-storage:/data/backup:ro
+
+  # --- Database: backend only, no egress, sidecar can't reach it ---
+  db:
+    image: postgres:16.4
+    container_name: db                       # verbatim; unique per VM is enough
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      - POSTGRES_PASSWORD_FILE=/run/secrets/db_password   # hybrid: file-secret for DB
+    secrets: [db_password]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]  # postgres init needs these
+    read_only: true
+    tmpfs: ["/tmp", "/run"]
+    mem_limit: 512m
+    cpus: "0.5"
+    pids_limit: 200
+    volumes:
+      - ./volumes/db:/var/lib/postgresql/data
+
+networks:
+  edge: {}                 # bridge: sidecar's published port (+ app egress when needs_egress)
+  frontend: {internal: true}   # sidecar <-> app, no internet
+  backend: {internal: true}    # app <-> db, no internet
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+
+# NFS volumes (optional, one per export): mounted by the VM host kernel, bind-mounted in — works
+# regardless of network isolation (unrelated to needs_egress). Always mounted `rw` here; read-only
+# enforced at the container mount with `:ro` (see app service above). Options: keep `soft`.
+# volumes:
+#   backup-storage:
+#     driver: local
+#     driver_opts:
+#       type: nfs
+#       o: "addr=192.168.86.250,rw,soft,timeo=30,retrans=3,intr"
+#       device: ":/export/backup"

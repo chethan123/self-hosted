@@ -1,0 +1,4 @@
+@getsubtitles host getsubtitles.{$BASE_DOMAIN}
+handle @getsubtitles {
+	reverse_proxy 10.1.1.99:6767
+}

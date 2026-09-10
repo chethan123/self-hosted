@@ -1,0 +1,4 @@
+@dnssync host dns-sync.{$BASE_DOMAIN}
+handle @dnssync {
+	reverse_proxy 192.168.86.106:8080
+}

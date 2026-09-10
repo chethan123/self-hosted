@@ -1,0 +1,4 @@
+@metube host metube.{$BASE_DOMAIN}
+handle @metube {
+	reverse_proxy 10.1.1.2:80
+}
