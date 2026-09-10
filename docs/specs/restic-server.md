@@ -24,9 +24,11 @@ package. `global-caddy/sites/` routes two relevant hosts today:
 More broadly, `global-caddy/sites/` carries ~33 host fragments against 3 app packages, so the
 monorepo is mid-migration and most of the fleet is not yet modelled here.
 
-**OPEN — blocking (§13):** whether this package *migrates* `10.1.1.200`, replaces it, or stands
-alongside it, and what becomes of Backrest. Until that is answered the hostname and IP in §13
-are provisional. The design below is unaffected; only its addressing is.
+**Decided:** this package is the **full replacement** for `restic.{$BASE_DOMAIN}`
+(`10.1.1.200`). That host and its route fragment are retired; this service stands up at
+`backup.{$BASE_DOMAIN}` / `10.1.1.100`. Backrest (`10.1.1.250`) is untouched by this spec — if it
+currently drives backups into `10.1.1.200` it must be repointed, which belongs to the deferred
+client-side work (§12).
 
 The obvious shapes were considered and rejected:
 
@@ -83,8 +85,9 @@ overwrites and refuses deletes except lock files.
 
 ```
 app VM (jellyfin)  ─┐
-app VM (seafile)   ─┼─ https ─> Global Caddy ─ http ─> Sidecar Caddy (10.1.1.100:80)
-app VM (…)         ─┘            (TLS, ADR-0001)              │
+app VM (seafile)   ─┼─ https ─> Global Caddy ─ HTTPS ─> Sidecar Caddy (10.1.1.100:443)
+app VM (…)         ─┘         (public wildcard)   ^           │
+                                                  └── internal CA, pinned (§8, D10)
                                                               │ handle_path strips prefix
                           ┌───────────────────────────────────┼────────────────────────┐
                           │                                   │                        │
@@ -172,6 +175,7 @@ exemption explicitly (`cmd/restic/cmd_unlock.go:24`).
 | **D6** | One repository per **target × app package**, path `/<target>/<app-slug>/` | A restic repository password decrypts everything in that repository. A shared repository would let any app decrypt every other app's backups. Isolation beats cross-app dedup, which was never going to be large across unrelated datasets. |
 | **D7** | **Backends own authentication**; Caddy passes `Authorization` through | Isolation is enforced by the process holding the data, not by a reverse-proxy matcher or by network topology. Username = app slug makes `--private-repos` enforce it for free. |
 | **D8** | Maintenance runs on a **separate, normally-powered-off VM** | It needs every repository password and full storage credentials — a strict superset of everything else in this design. restic's phrase is "a separate and well-secured client" (`doc/060_forget.rst:416-419`). A machine with no listening services is a much smaller target. |
+| **D10** | Sidecar terminates **TLS with Caddy's internal CA**, pinned by the Global Caddy | ADR-0001's plaintext hop carries every app's Basic credential here, on a segment the stated adversary shares. Let's Encrypt was considered and rejected: the sidecar is not internet-reachable, so DNS-01 would be required, which puts a Cloudflare zone-edit token — a domain-wide capability — on the host holding every backup. Both ends of this hop are ours, so a public CA adds nothing over a pinned internal one. §8. |
 | **D9** | pcloud's rclone config is a **read-only file-secret**, exactly like rsync.net's | An earlier draft made it writable state in `volumes/` on the theory that OAuth refresh must persist. That was wrong twice. pcloud's stored token carries `"expiry":"0001-01-01T00:00:00Z"` (`docs/content/pcloud.md:65`), and `timeToExpiry` returns ~95 years for a zero expiry (`lib/oauthutil/oauthutil.go:412-421`) — the renewer is armed but never fires. Even if it did, `configfile.Save` writes via `os.CreateTemp(configDir,…)` + `os.Rename` (`fs/config/configfile/configfile.go:132,191,197`), which a single-file bind mount cannot satisfy: EROFS on the temp create under `read_only`, EBUSY renaming over the mount point. If a writable rclone config is ever genuinely needed, mount the *directory* and pass `--config /config/rclone.conf`. |
 
 ## 8. Component specification
@@ -275,6 +279,56 @@ repository.
 The rsync.net remote therefore sets `known_hosts_file = /run/secrets/rsync-net.known_hosts`,
 seeded from rsync.net's published host key. `--sftp-pin-host-key` is **not** a substitute: it is
 trust-on-first-use and needs a writable config to persist the pin, which D9 rules out.
+
+### Transport security — deviation from ADR-0001
+
+ADR-0001 makes the Global Caddy → sidecar hop plain HTTP. **This app does not.** For every other
+app that hop carries only that app's own traffic; here it carries *every* app's Basic credential,
+and the stated adversary — a compromised app VM — shares the `10.1.1.0/24` segment. Left
+plaintext, one compromised app could ARP-spoof the path and harvest every other app's backup
+credential, defeating goal 3.
+
+The sidecar therefore terminates TLS on **:443** using **Caddy's internal CA**:
+
+```caddyfile
+backup.{$BASE_DOMAIN} {
+	tls internal
+	...
+}
+```
+
+and the Global-Caddy fragment pins it:
+
+```caddyfile
+@backup host backup.{$BASE_DOMAIN}
+handle @backup {
+	reverse_proxy https://10.1.1.100 {
+		transport http {
+			tls_trusted_ca_certs /etc/caddy/backup-ca.crt
+			tls_server_name backup.{$BASE_DOMAIN}
+		}
+	}
+}
+```
+
+`tls internal` is in stock Caddy, so the sidecar stays on `caddy:2.8-alpine` — no xcaddy build,
+no DNS module.
+
+**Why not Let's Encrypt here.** The sidecar is not internet-reachable, so HTTP-01 and TLS-ALPN-01
+are unavailable; DNS-01 would work but requires the xcaddy Cloudflare build *and* a Cloudflare
+zone-edit token on this VM. That token is a domain-wide capability — a compromised backup host
+could then hijack any subdomain — which is a strictly larger blast radius than the problem being
+solved. The only client on this hop is the Global Caddy, and both ends are configured by us, so a
+publicly-trusted CA buys nothing a pinned internal CA does not. LE stays on the Global Caddy,
+where the token already lives (ADR-0005).
+
+`tls_insecure_skip_verify` was rejected: it encrypts without authenticating, and an active
+on-path attacker would simply present its own certificate.
+
+**CA root distribution.** A CA *certificate* is public — only the key is secret, and it never
+leaves the sidecar's `volumes/caddy`. The root is therefore **committed to `global-caddy/`** and
+reaches every Caddy VM through the sparse checkout they already do. Bootstrap and recovery are
+in §12.1.
 
 ### Routing
 
@@ -411,13 +465,10 @@ third copy, not an immutable tier.
 **Compromise of the maintenance VM** (once built) is total: every repository password, full
 storage credentials, and the pcloud account password.
 
-**Credential interception on the LAN. OPEN — see §13.** ADR-0001 makes the Global Caddy →
-sidecar hop plain HTTP. For every other app that hop carries that app's own traffic; here it
-carries **every app's Basic credential**. The stated adversary — a compromised app VM — sits on
-that LAN. Unless app VMs are L2-isolated from the Global-Caddy→sidecar segment, ARP spoofing
-yields other apps' credentials and goal 3 does not hold. Either the VLAN isolation must be
-stated as a relied-upon assumption, or this app's sidecar should terminate TLS — it is the one
-place in the fleet where the plaintext hop carries cross-app secrets.
+**Credential interception on the LAN — closed.** The Global Caddy → sidecar hop is TLS with a
+pinned internal CA (§8), not plaintext as ADR-0001 otherwise prescribes. This is the one place
+in the fleet where that hop carries cross-app secrets, which is why it deviates. The design does
+**not** rely on VLAN isolation for goal 3.
 
 **Availability isolation is not achieved.** Append-only permits unlimited *additions*. One
 compromised app can exhaust the NFS export, the rsync.net quota or the pcloud quota and thereby
@@ -439,13 +490,13 @@ corruption vector.
 | rsync.net ZFS snapshot immutability — the only backstop against compromise of this VM | **UNVERIFIED.** rsync.net is egress-blocked from the authoring environment; findings came from search-index summaries, not pages read. Verify before relying on it. |
 | rsync.net host key must be obtained out of band | **ACTION REQUIRED.** Without `known_hosts_file`, rclone does no validation at all (`sftp.go:1363-1365`). |
 | bcrypt-per-request on `rclone serve restic` | **UNMEASURED.** Fallbacks in §8. Measure at bring-up. |
-| Plaintext Global-Caddy→sidecar hop carries every app's credential | **OPEN DECISION.** §10, §13. |
+| Global-Caddy→sidecar hop | **CLOSED** — TLS with a pinned internal CA (§8). Residual: if the sidecar's `volumes/caddy` is lost the CA regenerates and the root must be re-committed; until then the Global Caddy returns 502 for this host. Recovery in §12.1. |
 | `rclone serve restic` does not verify uploaded objects | **VERIFIED** — straight to `RcatSize` (`restic.go:435`), no hash check, unlike rest-server (`repo/repo.go:601-613`). Narrower than it sounds: restic verifies blobs before sending (`repository.go:409-452`), so the gap is in-transit or at-server corruption over TLS; `check --read-data` catches it later. |
 | Non-atomic writes on SFTP and pcloud | **VERIFIED** — both declare `PartialUploads: true`. An interrupted upload can leave a truncated pack under its final name; in append-only mode it can be neither overwritten (`restic.go:424-433`) nor deleted, so the maintenance path must remove it. The affected backup run fails immediately rather than retrying — restic treats 403 as permanent (`internal/backend/rest/rest.go:178-190`) — and the next run picks new pack IDs, so the repository is not wedged. |
 | Stale rclone object cache after maintenance | **VERIFIED** — §9. Restart or `--cache-objects=false`. |
 | No monitoring | **OPEN.** A backup system that stops silently is worse than none. Largest known gap; deferred with the client-side work. |
 | htpasswd files hand-maintained across three services | **ACCEPTED for now.** Rots quickly — the fleet is ~33 routed services, not 3. The follow-on should derive them from `app.meta.yaml`. |
-| Relationship to the existing `restic.{$BASE_DOMAIN}` host and Backrest | **OPEN — blocking.** §1, §13. |
+| Backrest (`10.1.1.250`) may still target the retired `10.1.1.200` | **OPEN** — repointing it belongs to the deferred client-side work (§12). |
 
 ## 12. Deferred work
 
@@ -465,34 +516,33 @@ Goal 5 promises no host-*daemon* prerequisites, not zero setup. These must exist
 - A pcloud OAuth grant obtained by running `rclone authorize` on a machine with a browser.
 - Three htpasswd files generated (`htpasswd -B`).
 - The Global-Caddy route fragment installed on every Caddy VM.
+- **Sidecar CA bootstrap:** start the sidecar once, extract Caddy's internal root from
+  `volumes/caddy/pki/authorities/local/root.crt`, commit it to `global-caddy/` as
+  `backup-ca.crt`, and reload the Global Caddy instances. Repeat this if the sidecar's
+  `volumes/caddy` is ever lost — the CA regenerates and the old root stops matching.
+- Retire `global-caddy/sites/restic.caddy` and decommission `10.1.1.200`.
 
 ## 13. Configuration values
 
 | Key | Value |
 |---|---|
-| hostname | **OPEN** — `backup` provisional, pending the §1 decision on `restic.{$BASE_DOMAIN}` |
-| VM IP | **OPEN** — `10.1.1.100` provisional; confirm unallocated, and see §1 re `10.1.1.200` |
-| sidecar port | `80` |
+| hostname | `backup` → `backup.{$BASE_DOMAIN}` (replaces `restic.{$BASE_DOMAIN}`) |
+| VM IP | `10.1.1.100` (replaces `10.1.1.200`) |
+| sidecar port | **`443`** — TLS terminates at the sidecar (§8), not 80 as elsewhere in the fleet |
 | NFS server / export | `192.168.86.250:/export/restic` |
 | backend UID:GID | `1000:1000` |
 | pcloud region | US — `api.pcloud.com` |
 | rsync.net | **placeholder** — real user, host, path and host key to be filled in |
 | seeded app slugs | **placeholder** |
 | minimum restic client | `>= 0.13` is a hard floor — lock refresh became create-new-then-delete-old in 0.13, which append-only requires. Pin a current release in practice. |
-| Global route fragment | `global-caddy/sites/<hostname>.caddy`, host-matcher form per ADR-0002 |
+| Global route fragment | `global-caddy/sites/backup.caddy`, host-matcher form per ADR-0002 |
+| Sidecar CA root | `global-caddy/backup-ca.crt` — committed, public, bootstrapped per §12.1 |
 
 rsync.net requires paths with **no leading `/`** (`sftp.md:34-36`).
 
 Nothing in the chain limits request body size; pack uploads are unbounded by design. rclone's
 `--server-read-timeout`/`--server-write-timeout` default to 1 h each
 (`lib/http/server.go:141-148`), bounding a single pack transfer — ample on a LAN.
-
-### Open decisions blocking implementation
-
-1. **§1** — migrate, replace, or stand alongside `restic.{$BASE_DOMAIN}` (`10.1.1.200`)? What
-   happens to Backrest (`10.1.1.250`)? Determines hostname and IP.
-2. **§10** — rely on VLAN isolation for the plaintext Global-Caddy→sidecar hop, or terminate TLS
-   at this app's sidecar?
 
 ## 14. References
 
