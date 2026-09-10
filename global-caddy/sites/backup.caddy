@@ -1,0 +1,13 @@
+# Pins the sidecar's internal CA (D10) — this is the only app whose Global-Caddy hop is HTTPS,
+# not the fleet's default plaintext (ADR-0001). backup-ca.crt is bootstrapped per
+# docs/specs/restic-server.md §12.1: start the sidecar once, extract
+# volumes/caddy/pki/authorities/local/root.crt, commit it here, reload.
+@backup host backup.{$BASE_DOMAIN}
+handle @backup {
+	reverse_proxy https://10.1.1.100 {
+		transport http {
+			tls_trusted_ca_certs /etc/caddy/backup-ca.crt
+			tls_server_name backup.{$BASE_DOMAIN}
+		}
+	}
+}

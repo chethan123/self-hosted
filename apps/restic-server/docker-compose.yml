@@ -1,0 +1,164 @@
+# Three backend services, no shared upstream: NFS is a real filesystem (rest-server), rsync.net
+# and pcloud are APIs (rclone serve restic) — see docs/specs/restic-server.md §5, §8 (D1).
+services:
+
+  # --- Sidecar Caddy: the ONLY host-published port on this VM ---
+  # :443, not :80 — terminates TLS with Caddy's internal CA (D10). This is the one hop in the
+  # fleet that carries every app's Basic credential, so ADR-0001's plaintext hop is deliberately
+  # not used here. Stock caddy:2.8-alpine — `tls internal` needs no xcaddy build.
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: caddy-restic-server
+    restart: unless-stopped
+    networks: [edge, frontend]
+    ports:
+      - "${SIDECAR_PORT:-443}:443"
+    environment:
+      - BASE_DOMAIN=${BASE_DOMAIN}   # the Caddyfile's site header
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./volumes/caddy:/data
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    cpus: "0.5"
+    pids_limit: 50
+
+  # --- rest-server: the `nfs` target. A real POSIX filesystem, so restic's own server runs on
+  # it directly (D1). Not on `edge` — the export is kernel-mounted by the VM host, not fetched
+  # by this container. ---
+  rest-server:
+    image: restic/rest-server:0.14.0
+    container_name: rest-server
+    restart: unless-stopped
+    networks: [frontend]
+    user: "1000:1000"   # image ships no USER instruction
+    environment:
+      # Default is /data/.htpasswd, on the NFS export — entrypoint.sh:8-10 touches an empty one
+      # and every request 401s if this isn't overridden.
+      - PASSWORD_FILE=/run/secrets/htpasswd-nfs
+      - OPTIONS=--append-only --private-repos
+    secrets: [htpasswd-nfs]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 100
+    volumes:
+      - restic-nfs:/data:rw
+    healthcheck:
+      # --private-repos means an unauthenticated GET always 401s; that's a valid liveness probe.
+      test: ["CMD-SHELL", "wget -S --spider http://localhost:8000/ 2>&1 | grep -q ' 401 '"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # --- rclone-rsync-net: the `rsync-net` target, over SFTP. `serve restic`, not the rclone
+  # Docker volume plugin (D1) — no CAP_SYS_ADMIN, no /dev/fuse, no VFS cache sitting between
+  # fsync and durable. ---
+  rclone-rsync-net:
+    image: rclone/rclone:1.75.1   # floor is 1.75.0 — CVE-2026-71309 path traversal; never go lower
+    container_name: rclone-rsync-net
+    restart: unless-stopped
+    networks: [edge, frontend]
+    user: "1000:1000"   # FROM alpine, no USER instruction
+    # No leading "rclone": the image's ENTRYPOINT is already ["rclone"] (Dockerfile), and
+    # Compose's `command:` replaces CMD, not ENTRYPOINT — a leading "rclone" here runs
+    # `rclone rclone serve ...` and crash-loops on the nonexistent subcommand.
+    command:
+      - "serve"
+      - "restic"
+      - "--addr"
+      - ":8080"   # default is 127.0.0.1:8080 — sidecar can't reach that at all
+      - "--append-only"
+      - "--private-repos"
+      - "--htpasswd"
+      - "/run/secrets/htpasswd-rsync-net"
+      - "--config"
+      - "/run/secrets/rclone-rsync-net.conf"
+      - "rsync-net:${RSYNC_NET_REMOTE_PATH}"
+    secrets: [htpasswd-rsync-net, rclone-rsync-net.conf, rsync-net.key, rsync-net.known_hosts]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=256m"]   # --temp-dir defaults to /tmp; bounded so a big upload OOMs the
+                                # tmpfs (clean ENOSPC), not the container's mem_limit
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD-SHELL", "wget -S --spider http://localhost:8080/ 2>&1 | grep -q ' 401 '"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # --- rclone-pcloud: the `pcloud` target, over pcloud's API. Config is a read-only file-secret
+  # (D9) — pcloud's OAuth token has a zero expiry and never needs to be refreshed, so there is
+  # nothing here that needs a writable config. ---
+  rclone-pcloud:
+    image: rclone/rclone:1.75.1
+    container_name: rclone-pcloud
+    restart: unless-stopped
+    networks: [edge, frontend]
+    user: "1000:1000"
+    # No leading "rclone" — see the rclone-rsync-net comment above.
+    command:
+      - "serve"
+      - "restic"
+      - "--addr"
+      - ":8080"
+      - "--append-only"
+      - "--private-repos"
+      - "--htpasswd"
+      - "/run/secrets/htpasswd-pcloud"
+      - "--config"
+      - "/run/secrets/rclone-pcloud.conf"
+      - "pcloud:restic"
+    secrets: [htpasswd-pcloud, rclone-pcloud.conf]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=256m"]
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD-SHELL", "wget -S --spider http://localhost:8080/ 2>&1 | grep -q ' 401 '"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+networks:
+  edge: {}                     # bridge: sidecar's published port; egress for the two rclone services
+  frontend: {internal: true}   # sidecar <-> all three backends, no internet
+  # No `backend` network — this app has no database (docs/specs/restic-server.md §8).
+
+secrets:
+  htpasswd-nfs:
+    file: ./secrets/htpasswd-nfs
+  htpasswd-rsync-net:
+    file: ./secrets/htpasswd-rsync-net
+  htpasswd-pcloud:
+    file: ./secrets/htpasswd-pcloud
+  rclone-rsync-net.conf:
+    file: ./secrets/rclone-rsync-net.conf
+  rclone-pcloud.conf:
+    file: ./secrets/rclone-pcloud.conf
+  rsync-net.key:
+    file: ./secrets/rsync-net.key
+  rsync-net.known_hosts:
+    file: ./secrets/rsync-net.known_hosts
+
+# NFS-backed named volume: kernel-mounted by the VM host, so it works regardless of network
+# isolation. `rw` is deliberate — this is the repository store (app.meta.yaml nfs_volumes: rw).
+volumes:
+  restic-nfs:
+    driver: local
+    driver_opts:
+      type: "nfs"
+      o: "addr=${NFS_SERVER},rw,soft,timeo=30,retrans=3,intr"
+      device: "${NFS_SERVER}:/export/restic"
