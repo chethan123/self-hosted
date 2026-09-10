@@ -173,6 +173,15 @@ this package** — deferred, along with `apps/_template/` and `/onboard-app` cha
 
 ## Notes
 
+- **This package has never been brought up.** Validation so far is static only: `docker compose
+  config` resolves cleanly against a filled-in `.env` (networks, secrets, and the NFS
+  `driver_opts` interpolation all check out), and every fact in spec §7/§8 was checked directly
+  against these files. The authoring sandbox's egress policy blocks pulling any of the three
+  pinned images, so nothing here has actually started a container — `wget`/`grep` existing in the
+  `rclone` and `rest-server` images (the healthcheck `test:` commands depend on it), the exact
+  cap/tmpfs set being sufficient under `read_only: true`, and the `handle_path` trailing-slash
+  behavior (next bullet) are all unverified. Do the real bring-up, and the `curl -v` check below,
+  before trusting this in production.
 - **Hardening is NOT verified.** `/harden-container` has never run against this package
   (`hardening_verified: false`) — out of scope for this change, same as the superseded
   `apps/restic`. `caps_added: []` and the `tmpfs_paths` above are the optimistic starting
