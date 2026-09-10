@@ -1,0 +1,33 @@
+# Sidecar Caddy — deviates from every other app (ADR-0001's plaintext hop): this one carries
+# every app's Basic credential on a segment the stated adversary shares, so it terminates TLS
+# itself with Caddy's own internal CA (D10) instead of staying plain HTTP. Global Caddy pins the
+# root via tls_trusted_ca_certs — see global-caddy/sites/backup.caddy and
+# docs/specs/restic-server.md §8, §12.1 for the CA bootstrap.
+backup.{$BASE_DOMAIN} {
+	tls internal
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+	}
+
+	# --- deliberately NOT here ---
+	# * No basicauth: each backend owns its own auth (htpasswd); Caddy passes Authorization through.
+	# * No request_body max_size: restic streams multi-MB pack files every backup.
+
+	# handle_path strips the matched prefix — each backend sees its own root, not /nfs/... etc.
+	handle_path /nfs/* {
+		reverse_proxy rest-server:8000
+	}
+	handle_path /rsync-net/* {
+		reverse_proxy rclone-rsync-net:8080
+	}
+	handle_path /pcloud/* {
+		reverse_proxy rclone-pcloud:8080
+	}
+	handle {
+		respond "Service not found" 404
+	}
+}

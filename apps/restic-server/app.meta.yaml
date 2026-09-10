@@ -1,0 +1,65 @@
+# Machine-readable contract for this app. Drives global-route generation, linting, and docs.
+# `/harden-container` has not run — see hardening_verified below.
+name: restic-server
+hostname: backup          # subdomain only; full host is backup.{BASE_DOMAIN}
+vm_ip: 10.1.1.100         # reserved static IP of this app's VM
+sidecar_port: 443         # TLS terminates at the sidecar (D10) — the one app not on :80
+
+needs_egress: true         # rclone-rsync-net and rclone-pcloud are on `edge`; rest-server is not
+secrets_mode: file-secrets # env | file-secrets | hybrid — nothing here is a secret carried via env
+
+# Recorded deviation — no slug-named service (docs/specs/restic-server.md §8 "Service naming").
+# CLAUDE.md requires the app service to be named after the app slug, because that's the sidecar's
+# reverse_proxy target. This package fans out to three upstreams instead of one, so there is no
+# `restic-server` service. Mirrors apps/jellyfin: a jellyfin-style `routes:` block below names
+# each path and its upstream in place of the missing slug-named service.
+routes:
+  - path: /nfs
+    upstream: rest-server:8000
+  - path: /rsync-net
+    upstream: rclone-rsync-net:8080
+  - path: /pcloud
+    upstream: rclone-pcloud:8080
+
+# Recorded deviation — no `backend` network (docs/specs/restic-server.md §8 "Networks"). This
+# app has no database; all three backends share `frontend` with the sidecar. Under D7 (backends
+# own authentication) this is safe: reaching another service still requires that service's own
+# credential.
+
+# NOT YET VERIFIED — /harden-container has never run against this app (out of scope for this
+# change, same as the superseded apps/restic package). Empty caps_added lists are the optimistic
+# starting posture, not a measured minimum.
+hardening_verified: false
+
+services:
+  caddy:
+    image_type: vanilla   # caddy:2.8-alpine
+    read_only: false      # house default for the sidecar; not yet tightened anywhere
+    caps_added: []
+    tmpfs_paths: []
+  rest-server:
+    image_type: vanilla   # restic/rest-server:0.14.0 — ships no USER; `user:` required
+    read_only: true
+    caps_added: []
+    tmpfs_paths: []
+  rclone-rsync-net:
+    image_type: vanilla   # rclone/rclone:1.75.1 — FROM alpine, no USER; `user:` required
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp]   # rclone --temp-dir defaults to /tmp
+  rclone-pcloud:
+    image_type: vanilla   # rclone/rclone:1.75.1
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp]
+
+# The `nfs` target's repository store. One of the few `rw` NFS mounts in the fleet — deliberate,
+# per docs/specs/restic-server.md §8.
+nfs_volumes:
+  - name: restic-nfs
+    server: 192.168.86.250
+    export: /export/restic
+    mount_path: /data
+    access: rw
+
+owner: chethan
