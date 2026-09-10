@@ -27,8 +27,11 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./sites:/etc/caddy/sites:ro
-      - ./backup-ca.crt:/etc/caddy/backup-ca.crt:ro   # pinned by sites/backup.caddy — see its
-                                                        # comment and docs/specs/restic-server.md §12.1
+      # A DIRECTORY, like ./sites above — never a single file. Compose creates a missing
+      # bind-mount source as a directory, so a not-yet-bootstrapped `backup-ca.crt` would appear
+      # as a directory and fail Caddy's config load, taking every route on this VM down with it.
+      # An empty ./ca always mounts; sites/backup.caddy stays commented out until the cert lands.
+      - ./ca:/etc/caddy/ca:ro
       - ./volumes/data:/data            # certs / ACME state — MUST persist
       - ./volumes/config:/config        # Caddy autosave config — MUST persist
 

@@ -1,13 +1,25 @@
-# Pins the sidecar's internal CA (D10) — this is the only app whose Global-Caddy hop is HTTPS,
-# not the fleet's default plaintext (ADR-0001). backup-ca.crt is bootstrapped per
-# docs/specs/restic-server.md §12.1: start the sidecar once, extract
-# volumes/caddy/pki/authorities/local/root.crt, commit it here, reload.
-@backup host backup.{$BASE_DOMAIN}
-handle @backup {
-	reverse_proxy https://10.1.1.100 {
-		transport http {
-			tls_trusted_ca_certs /etc/caddy/backup-ca.crt
-			tls_server_name backup.{$BASE_DOMAIN}
-		}
-	}
-}
+# backup.{$BASE_DOMAIN} -> the restic-server sidecar (10.1.1.100), over HTTPS.
+#
+# DISABLED UNTIL THE CA IS BOOTSTRAPPED. This is the only app whose Global-Caddy hop is HTTPS
+# rather than the fleet's default plaintext (ADR-0001), because it carries every app's Basic
+# credential. It pins the sidecar's own internal CA — and Caddy fails its whole config load if
+# tls_trusted_ca_certs names a file that is not a readable certificate. Uncommenting this before
+# ca/backup-ca.crt exists takes down every route on this VM, not just this one.
+#
+# To enable (see docs/specs/restic-server.md §12.1 and apps/restic-server/README.md):
+#   1. On the restic-server VM:  docker compose up -d caddy
+#   2. Copy volumes/caddy/pki/authorities/local/root.crt to global-caddy/ca/backup-ca.crt
+#   3. Commit it, uncomment the block below, then on every Caddy VM: docker compose up -d
+#
+# Repeat all three if the sidecar's volumes/caddy is ever lost: `tls internal` regenerates its
+# root, the old one stops matching, and this host 502s until the new root is redeployed.
+
+# @backup host backup.{$BASE_DOMAIN}
+# handle @backup {
+# 	reverse_proxy https://10.1.1.100 {
+# 		transport http {
+# 			tls_trusted_ca_certs /etc/caddy/ca/backup-ca.crt
+# 			tls_server_name backup.{$BASE_DOMAIN}
+# 		}
+# 	}
+# }

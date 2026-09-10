@@ -304,7 +304,7 @@ and the Global-Caddy fragment pins it:
 handle @backup {
 	reverse_proxy https://10.1.1.100 {
 		transport http {
-			tls_trusted_ca_certs /etc/caddy/backup-ca.crt
+			tls_trusted_ca_certs /etc/caddy/ca/backup-ca.crt
 			tls_server_name backup.{$BASE_DOMAIN}
 		}
 	}
@@ -326,9 +326,18 @@ where the token already lives (ADR-0005).
 on-path attacker would simply present its own certificate.
 
 **CA root distribution.** A CA *certificate* is public — only the key is secret, and it never
-leaves the sidecar's `volumes/caddy`. The root is therefore **committed to `global-caddy/`** and
-reaches every Caddy VM through the sparse checkout they already do. Bootstrap and recovery are
-in §12.1.
+leaves the sidecar's `volumes/caddy`. The root is therefore **committed to `global-caddy/ca/`**
+and reaches every Caddy VM through the sparse checkout they already do. Bootstrap and recovery
+are in §12.1.
+
+**Bootstrap ordering is a fleet-wide hazard, and the repo guards it.** The cert can only be
+extracted *after* the sidecar first starts, but the Global Caddy config that pins it is committed
+before that. Caddy fails its whole config load if `tls_trusted_ca_certs` names anything that is
+not a readable certificate, so an early `git pull && docker compose up -d` on a Caddy VM would
+take down every route on it. Two guards: `sites/backup.caddy` ships **commented out** until the
+cert exists, and the mount is a *directory* (`./ca:/etc/caddy/ca:ro`) rather than a single file,
+because Compose creates a missing bind-mount source as a directory — a single-file mount would
+silently yield `backup-ca.crt/` and fail Caddy later.
 
 ### Routing
 
@@ -516,10 +525,12 @@ Goal 5 promises no host-*daemon* prerequisites, not zero setup. These must exist
 - A pcloud OAuth grant obtained by running `rclone authorize` on a machine with a browser.
 - Three htpasswd files generated (`htpasswd -B`).
 - The Global-Caddy route fragment installed on every Caddy VM.
-- **Sidecar CA bootstrap:** start the sidecar once, extract Caddy's internal root from
-  `volumes/caddy/pki/authorities/local/root.crt`, commit it to `global-caddy/` as
-  `backup-ca.crt`, and reload the Global Caddy instances. Repeat this if the sidecar's
-  `volumes/caddy` is ever lost — the CA regenerates and the old root stops matching.
+- **Sidecar CA bootstrap, in this order:** start the sidecar once; copy Caddy's internal root
+  from `volumes/caddy/pki/authorities/local/root.crt` to `global-caddy/ca/backup-ca.crt`; commit
+  it; **uncomment the block in `global-caddy/sites/backup.caddy`**; then `docker compose up -d`
+  on every Caddy VM (a reload alone won't pick up the new mount). Repeat all of it if the
+  sidecar's `volumes/caddy` is ever lost — the CA regenerates and the old root stops matching,
+  and this host 502s until the new one is redeployed.
 - Retire `global-caddy/sites/restic.caddy` and decommission `10.1.1.200`.
 
 ## 13. Configuration values
@@ -536,7 +547,7 @@ Goal 5 promises no host-*daemon* prerequisites, not zero setup. These must exist
 | seeded app slugs | **placeholder** |
 | minimum restic client | `>= 0.13` is a hard floor — lock refresh became create-new-then-delete-old in 0.13, which append-only requires. Pin a current release in practice. |
 | Global route fragment | `global-caddy/sites/backup.caddy`, host-matcher form per ADR-0002 |
-| Sidecar CA root | `global-caddy/backup-ca.crt` — committed, public, bootstrapped per §12.1 |
+| Sidecar CA root | `global-caddy/ca/backup-ca.crt` — committed, public, bootstrapped per §12.1. The route fragment stays commented out until it exists. |
 
 rsync.net requires paths with **no leading `/`** (`sftp.md:34-36`).
 
