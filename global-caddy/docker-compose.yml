@@ -27,6 +27,8 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./sites:/etc/caddy/sites:ro
+      - ./backup-ca.crt:/etc/caddy/backup-ca.crt:ro   # pinned by sites/backup.caddy — see its
+                                                        # comment and docs/specs/restic-server.md §12.1
       - ./volumes/data:/data            # certs / ACME state — MUST persist
       - ./volumes/config:/config        # Caddy autosave config — MUST persist
 

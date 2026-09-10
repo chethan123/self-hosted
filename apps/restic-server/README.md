@@ -59,23 +59,33 @@ no FUSE, no capability grants. It is not zero-setup, though. These must exist fi
    squashing that UID into `nobody` (check `anonuid`/`anongid` on the export).
 2. **rsync.net account.** An SSH keypair registered with rsync.net, and its host key captured
    for `known_hosts` — rclone does **no** host-key validation unless `known_hosts_file` is set.
+   Don't trust a bare `ssh-keyscan` result: a compromised host on the LAN can answer the scan and
+   become the permanently pinned "rsync.net", defeating the whole point of `known_hosts_file`.
+   Cross-check whatever you capture against rsync.net's published fingerprint through an
+   out-of-band channel (their docs/support, not this network) before writing it to the file.
 3. **pcloud OAuth grant.** Run `rclone authorize "pcloud"` on any machine with a browser; the
    resulting token has a zero expiry (never needs refreshing — see D9), so it's a one-time step.
 4. **Three htpasswd files.** One bcrypt line per onboarded app, per target — see "Building the
    secrets" below.
-5. **Global-Caddy route fragment.** `global-caddy/sites/backup.caddy` (already added by this
-   change) installed on every Caddy VM via its sparse checkout, then `caddy reload`.
-6. **Sidecar CA bootstrap.** `tls internal` generates its own root the first time Caddy starts.
-   Do this once, before the Global-Caddy fragment is useful:
+5. **Sidecar CA bootstrap — do this before step 6.** `tls internal` generates its own root the
+   first time Caddy starts:
    ```bash
    docker compose up -d caddy
    cp volumes/caddy/pki/authorities/local/root.crt /path/to/self-hosted/global-caddy/backup-ca.crt
-   # commit global-caddy/backup-ca.crt, then on every Global Caddy VM:
-   caddy reload
+   # commit global-caddy/backup-ca.crt
    ```
    Repeat this whenever `volumes/caddy` is lost — the CA regenerates and the old root stops
    matching, so the Global Caddy returns 502 for `backup.<domain>` until the new root is
-   re-committed and reloaded.
+   re-committed and redeployed.
+6. **Global-Caddy route fragment + CA mount.** `global-caddy/sites/backup.caddy` (already added
+   by this change) pins `backup-ca.crt`, and `global-caddy/docker-compose.yml` now bind-mounts
+   `./backup-ca.crt` into the container. That file **must exist on disk from step 5 before the
+   Global Caddy container is (re)created** — a missing bind-mount source fails container
+   creation, taking down routing for every other app on that VM, not just this one. Once it
+   exists, on every Caddy VM:
+   ```bash
+   docker compose up -d   # recreate — the new mount needs this; `caddy reload` alone won't pick it up
+   ```
 7. **Retire the old route.** Once this package is live, delete
    `global-caddy/sites/restic.caddy` and decommission `10.1.1.200` on every Caddy VM. **Not done
    by this change** — it's a manual cutover step for whoever deploys this, and Backrest
@@ -92,18 +102,21 @@ cp .env.example .env   # fill in BASE_DOMAIN and RSYNC_NET_REMOTE_PATH for real
 # --- htpasswd, one file per target, one bcrypt line per app slug ---
 # Placeholder slug used below: `example-app`. Real onboarding: append one more line per file,
 # per app, then restart the affected backend (see "Onboarding a new app").
-docker run --rm --entrypoint htpasswd restic/rest-server:0.14.0 \
-    -nbB example-app 'STRONG-PASSWORD-1' > secrets/htpasswd-nfs
-docker run --rm --entrypoint htpasswd restic/rest-server:0.14.0 \
-    -nbB example-app 'STRONG-PASSWORD-2' > secrets/htpasswd-rsync-net
-docker run --rm --entrypoint htpasswd restic/rest-server:0.14.0 \
-    -nbB example-app 'STRONG-PASSWORD-3' > secrets/htpasswd-pcloud
+# No `-b`: that puts the password in argv, visible in shell history and briefly in `ps`. Drop it
+# and htpasswd prompts interactively (needs -it); only the resulting bcrypt line goes to stdout.
+docker run --rm -it --entrypoint htpasswd restic/rest-server:0.14.0 \
+    -nB example-app > secrets/htpasswd-nfs
+docker run --rm -it --entrypoint htpasswd restic/rest-server:0.14.0 \
+    -nB example-app > secrets/htpasswd-rsync-net
+docker run --rm -it --entrypoint htpasswd restic/rest-server:0.14.0 \
+    -nB example-app > secrets/htpasswd-pcloud
 chown 1000:1000 secrets/htpasswd-* && chmod 640 secrets/htpasswd-*
 
 # --- rsync.net: SSH key + pinned host key (PLACEHOLDERS — replace with your real account) ---
 cp /path/to/your/rsync-net-key secrets/rsync-net.key
 chmod 600 secrets/rsync-net.key
-# One line, exactly as published by rsync.net / captured with ssh-keyscan:
+# One line. Do NOT just trust a raw `ssh-keyscan` here — see prerequisite 2 above: cross-check
+# it against rsync.net's published fingerprint out of band before writing it.
 echo 'CHANGEME.rsync.net ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAACHANGEMECHANGEMECHANGEME' \
     > secrets/rsync-net.known_hosts
 
@@ -126,7 +139,11 @@ token = {"access_token":"...","token_type":"bearer","expiry":"0001-01-01T00:00:0
 EOF
 # ^ `token` comes from `rclone authorize "pcloud"` (step 3 above) — paste its output verbatim.
 
-chown 1000:1000 secrets/rclone-*.conf secrets/rsync-net.* && chmod 640 secrets/rclone-*.conf secrets/rsync-net.*
+# Excludes rsync-net.key: it must stay 0600 (set above), not 0640 — a wildcard chmod here would
+# make the delete-capable SSH key readable by anything else in group 1000.
+chown 1000:1000 secrets/rclone-*.conf secrets/rsync-net.known_hosts
+chmod 640 secrets/rclone-*.conf secrets/rsync-net.known_hosts
+chown 1000:1000 secrets/rsync-net.key   # mode stays 0600 from above
 
 docker compose up -d
 ```
@@ -148,6 +165,10 @@ Three steps, no compose changes:
 3. Hand the app team their three credentials (below).
 
 ## Client usage
+
+**Minimum restic client: `0.13`.** Older clients lack create-new-then-delete-old lock refresh,
+which append-only repositories require — an older client's lock refresh fails outright partway
+through a backup. Pin a current release in practice (spec §13).
 
 ```bash
 # https://, not http:// — the Global Caddy's plain-HTTP listener redirects, and restic's REST

@@ -20,6 +20,9 @@ services:
       - ./volumes/caddy:/data
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
+    mem_limit: 256m
+    cpus: "0.5"
+    pids_limit: 50
 
   # --- rest-server: the `nfs` target. A real POSIX filesystem, so restic's own server runs on
   # it directly (D1). Not on `edge` — the export is kernel-mounted by the VM host, not fetched
@@ -61,8 +64,10 @@ services:
     restart: unless-stopped
     networks: [edge, frontend]
     user: "1000:1000"   # FROM alpine, no USER instruction
+    # No leading "rclone": the image's ENTRYPOINT is already ["rclone"] (Dockerfile), and
+    # Compose's `command:` replaces CMD, not ENTRYPOINT — a leading "rclone" here runs
+    # `rclone rclone serve ...` and crash-loops on the nonexistent subcommand.
     command:
-      - "rclone"
       - "serve"
       - "restic"
       - "--addr"
@@ -78,7 +83,8 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     read_only: true
-    tmpfs: ["/tmp"]   # --temp-dir defaults to /tmp; EROFS under read_only without this
+    tmpfs: ["/tmp:size=256m"]   # --temp-dir defaults to /tmp; bounded so a big upload OOMs the
+                                # tmpfs (clean ENOSPC), not the container's mem_limit
     mem_limit: 512m
     cpus: "1.0"
     pids_limit: 100
@@ -98,8 +104,8 @@ services:
     restart: unless-stopped
     networks: [edge, frontend]
     user: "1000:1000"
+    # No leading "rclone" — see the rclone-rsync-net comment above.
     command:
-      - "rclone"
       - "serve"
       - "restic"
       - "--addr"
@@ -115,7 +121,7 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     read_only: true
-    tmpfs: ["/tmp"]
+    tmpfs: ["/tmp:size=256m"]
     mem_limit: 512m
     cpus: "1.0"
     pids_limit: 100
