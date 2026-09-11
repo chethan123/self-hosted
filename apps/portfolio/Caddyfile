@@ -4,8 +4,10 @@
 # demuxes four). What is app-specific here is the gate: this file, not the app, is where
 # authentication is enforced, because this is the only published port on the VM.
 #
-# Taken from the upstream repo's Caddyfile. The house proxy in front is deliberately NOT trusted
-# with enforcement — a LAN device can dial this box's published port and land here.
+# Taken from the upstream repo's Caddyfile, with one addition: the house `header` block below.
+# It is response-only and non-terminal (`caddy adapt` puts it at route[0], deferred, no matcher),
+# so the forward_auth redirect and copy_headers are unaffected. The house proxy in front is
+# deliberately NOT trusted with enforcement — a LAN device can dial this box's port and land here.
 {
 	servers {
 		# Without this Caddy discards the house proxy's X-Forwarded-* and tells
@@ -56,7 +58,7 @@
 
 			# On non-2xx forward_auth copies the gate's response to the browser,
 			# and the gate answers a bare 401 — so build the handoff here. `rd`
-			# is relative on purpose: the sidecar refuses absolute redirects
+			# is relative on purpose: `gate` refuses absolute redirects
 			# outside `whitelist_domains` (unset), a path is always same-origin.
 			# Known limit: {uri} interpolates raw and Caddy cannot percent-encode,
 			# so a target with two query parameters splits at its first `&` — upstream #92.
