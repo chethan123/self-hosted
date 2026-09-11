@@ -1,0 +1,172 @@
+# Machine-readable contract for this app. Drives global-route generation, linting, and docs.
+# Migrated from github.com/chethan123/portfolio (its compose.yaml at v2.0.3) rather than scaffolded.
+name: portfolio
+hostname: portfolio       # subdomain only; full host is <hostname>.{BASE_DOMAIN}
+vm_ip: 10.1.1.10          # reserved static IP of this app's VM
+sidecar_port: 80          # the ONE host port the Sidecar Caddy publishes (onto its :8080)
+
+# true on restic-server's reading — some service here holds egress, not the app service. `gate`
+# reaches Google and `egress-proxy` reaches five Yahoo hosts; `app` itself is on two internal
+# networks and has no route out, which is the point of the topology below.
+needs_egress: true
+secrets_mode: env         # env | file-secrets | hybrid
+
+# Requires Docker Engine 28.0+ (the SERVER, not the CLI). Not a preference: 26 ignores
+# `gateway_mode_ipv4` silently and 27 refuses it, and without it every container on an `internal`
+# network still gets a host route — which is most of the isolation below.
+min_docker_engine: "28.0"
+
+# --- deviations from the house standard ---------------------------------------------------------
+# Schema extension: this repo asks app.meta.yaml to be "the audit trail for every deviation from
+# the defaults" (CLAUDE.md) but sets no shape for it. The other packages use inline `# DEVIATION`
+# comments on the field. Proposed, not settled — nothing parses these files today.
+deviations:
+  - rule: "the app service is named after the app slug — never `app`" # CLAUDE.md, Naming
+    taken: "service stays `app`; container_name is `app` too — one app per VM, so unambiguous"
+    why: "keeps this file diffable against upstream's compose.yaml, which it is re-vendored from.
+          A maintenance argument, nothing more. NOTE: an earlier version of this entry claimed the
+          rename would break upstream's scripts/smoke-test.sh — that was false. The test hardcodes
+          COMPOSE_FILE=compose.yaml:compose.dev.yaml and `up --build`, so it cannot run against
+          this package under any names; README.md, Notes says so."
+  - rule: "three per-VM networks: edge / frontend / backend"          # CLAUDE.md, Per-app networks
+    taken: "seven, upstream's, verbatim — see `networks` below"
+    why: "collapsing them would give `app` a direct route to `gate:4180` and `worker` a default
+          route off `worker-proxy`, deleting the isolation upstream's spec 0018 and its ADR-0010
+          are built on. Strictly tighter than the house model, not looser. Keeping upstream's
+          NAMES for those seven is the diff-size argument above, and only that."
+  - rule: "pinned image tags (never :latest)"                          # ADR-0003
+    taken: "ghcr.io/chethan123/portfolio-app:${APP_VERSION:-2} floats the major"
+    why: "this IS the upgrade mechanism — `pull_policy: always` + `up -d` rolls forward. The
+          default is 2, not upstream's 1: the tag never crosses a major, and this is upstream's
+          v2 compose, whose `worker`/`egress-proxy` entrypoints the v1 image does not contain.
+          Pin APP_VERSION in .env to hold still or roll back."
+  - rule: "pinned image tags (never :latest)"                          # ADR-0003
+    taken: "postgres:17-alpine floats the minor, via the x-postgres-image anchor"
+    why: "what is load-bearing is that `db` and `dump` match — pg_dump refuses a server newer
+          than itself — and the anchor guarantees that. Pin both at once by editing the anchor."
+  - rule: "Docker file-secrets for high-value secrets on images that support it" # CLAUDE.md, Secrets
+    taken: "secrets_mode: env — every credential comes from the gitignored .env"
+    why: "POSTGRES_PASSWORD has three consumers and only `db` reads *_FILE: a file-secret would
+          cover one while the same value sat in `app`/`dump`'s environment anyway — seafile's
+          reasoning exactly. oauth2-proxy does read OAUTH2_PROXY_CLIENT_SECRET_FILE, but ${VAR:?}
+          fails `up` naming the variable where a missing file only crash-loops the container, and
+          it does not trim the file — a trailing newline is sent as part of the secret and Google
+          answers 401 (v7.15.4 providers/provider_data.go)."
+  - rule: "non-root: `user: \"UID:GID\"` for vanilla/self-built images" # ADR-0003
+    taken: "`app`, `worker` and `egress-proxy` carry no `user:`; identity is the image's USER node"
+    why: "upstream's. Not yet changed because the package is untested on a real VM. Worth pinning:
+          the price-worker-sock volume already hardcodes uid=1000,gid=1000, so an upstream USER
+          change breaks the socket fence with nothing on the compose side to catch it.
+          `gate` is the recorded root exception below."
+  - rule: "`pids_limit`, `mem_limit`, `cpus` set"                      # ADR-0003
+    taken: "`worker` and `egress-proxy` have no `cpus:` — upstream never set one"
+    why: "left as upstream had them; these two are the only services it bounded, and its smoke
+          test asserts the exact mem_limit/pids_limit values. Same shape as jellyfin's
+          `cpus_unset`. The other five carry limits this migration added — see limits_verified."
+  - rule: "the app package is self-contained under sparse-checkout"    # CLAUDE.md, Repository layout
+    taken: "scripts/dump-loop.sh is vendored from the upstream repo"
+    why: "the `dump` service bind-mounts it with create_host_path:false, and a VM checks out
+          apps/portfolio/ and nothing else. SYNC POINT — re-vendor when upstream changes it. Its
+          own header cites upstream paths (docs/specs/dump/…, its ADR-0009) that do not resolve
+          in this repo; accepted, it is vendored verbatim."
+
+# --- edits made to the upstream files ------------------------------------------------------------
+# Distinct from `deviations` above (which is this package vs the HOUSE). This is this package vs
+# UPSTREAM — the list to replay when re-vendoring.
+upstream_edits:
+  docker-compose.yml:
+    - "added container_name: to all seven services; sidecar is caddy-portfolio"
+    - "caddy:2-alpine -> caddy:2.8-alpine (see caddy_pin below)"
+    - "ports 80:8080 -> ${SIDECAR_PORT:-80}:8080"
+    - "PUBLIC_ORIGIN and OAUTH2_PROXY_REDIRECT_URL composed from ${BASE_DOMAIN:?} (golden rule 4)"
+    - "gate's allowlist bind ./allowed-emails.txt -> ./secrets/allowed-emails.txt (gitignore)"
+    - "APP_VERSION default 1 -> 2 (four places, incl. the dump marker)"
+    - "added mem_limit/cpus/pids_limit to db, dump, app, gate, caddy"
+    - "retargeted the POSTGRES_PASSWORD error string at this README"
+  Caddyfile:
+    - "added the house security-headers `header` block at the top of the :8080 site. Verified
+       response-only and non-terminal (`caddy adapt` shows route[0], deferred, no matcher); the
+       forward_auth 302 and copy_headers X-Auth-Request-Email are unaffected."
+  scripts/dump-loop.sh:
+    - "none — byte-identical to upstream"
+
+# Pinned to the fleet's minor, and currently the safer side for this Caddyfile:
+# GHSA-6365-7ppr-5r92 (forward_auth beside reverse_proxy in one handler, which is exactly its
+# shape) lands in 2.11.0 and is unpatched on Docker Hub; CVE-2026-30851 (copy_headers identity
+# injection) affects 2.10.0-2.11.1 and not 2.8.4. Cost: a May-2024 Go toolchain on the fleet's
+# only auth-enforcing hop. Revisit when 2.11.5-alpine publishes.
+caddy_pin: "2.8-alpine"
+
+# --- network mapping ---------------------------------------------------------------------------
+# Schema extension: this app keeps upstream's seven. The first three are the house three renamed;
+# the rest have no house equivalent.
+networks:
+  ingress:      {house: edge,     internal: false, note: "sidecar's published port"}
+  caddy-app:    {house: frontend, internal: true,  note: "sidecar <-> app"}
+  backend:      {house: backend,  internal: true,  note: "app/dump <-> db"}
+  caddy-gate:   {house: null,     internal: true,  note: "sidecar <-> gate. Held apart from
+                 caddy-app so `app` has no direct route to gate:4180"}
+  worker-proxy: {house: null,     internal: true,  note: "worker <-> egress-proxy. Allocates no
+                 gateway, so `worker` cannot reach the host's published ports either"}
+  egress-proxy: {house: null,     internal: false, note: "egress-proxy's default route — the
+                 CONNECT tunnel to five Yahoo hosts, ClientHello pinned"}
+  egress-gate:  {house: null,     internal: false, note: "gate's default route — Google. The one
+                 container here running as root"}
+
+# false, like every other package here: /harden-container has never run against this app, and no
+# VM exists at 10.1.1.10 yet. The caps, tmpfs, read_only and uid lines below are upstream's
+# measured result, carried over by diff — but upstream's smoke test verified a DIFFERENT file
+# (caddy:2-alpine, no header block, no limits on five services, allowlist at the package root),
+# and it cannot be run against this one. Nothing here has been executed.
+hardening_verified: false
+limits_verified: false    # db, dump, app, gate, caddy carry starting values, not measurements
+
+services:
+  db:
+    image_type: vanilla     # postgres:17-alpine, user 70:70
+    read_only: true
+    caps_added: []          # tighter than the house template's postgres: the data dir is
+                            # pre-owned via an empty bind-backed volume, so initdb never chowns
+    tmpfs_paths: [/var/run/postgresql]   # socket + lock; 3777 in-image, /run at 0755 would not do
+  dump:
+    image_type: vanilla     # postgres:17-alpine, user ${DUMP_UID}:${DUMP_GID}
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp]     # pg_dump stderr only; the archive goes straight to /dumps
+  app:
+    image_type: self-built  # ghcr.io/chethan123/portfolio-app — built by upstream's CI from its
+                            # Dockerfile, pulled here; this repo never builds it
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp]
+  worker:
+    image_type: self-built  # same image, entrypoint server/price-worker.ts
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp]     # 64m
+    cpus_unset: true        # upstream's; its smoke test asserts the mem_limit/pids_limit values
+  egress-proxy:
+    image_type: self-built  # same image, entrypoint server/egress-proxy.ts
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp]     # 64m
+    cpus_unset: true        # upstream's
+  gate:
+    image_type: vanilla     # quay.io/oauth2-proxy/oauth2-proxy:v7.15.4-alpine
+    read_only: true
+    runs_as_root: true      # image sets no USER; pinning one would decide the allowlist's file
+                            # mode on the operator's behalf
+    caps_added: [DAC_READ_SEARCH]   # root's power to open a file it does not own IS this cap;
+                                    # without it: `failed opening authenticated-emails-file`
+    tmpfs_paths: [/tmp]
+  caddy:
+    image_type: vanilla     # caddy:2.8-alpine, user 65532:65532 — the Sidecar
+    read_only: true
+    caps_added: [NET_BIND_SERVICE]  # not for binding (8080 needs nothing) — /usr/bin/caddy's
+                                    # file capability cap_net_bind_service=ep needs it in the
+                                    # bounding set to exec at all
+    tmpfs_paths: [/config, /data]   # mode=1777; both root 0755 in-image. Clean logs only.
+
+# No NFS volumes. State is two bind mounts under ./volumes — see README.md, Backups.
+
+owner: chethan

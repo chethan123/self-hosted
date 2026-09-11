@@ -8,6 +8,11 @@ secrets/*
 !secrets/.gitkeep
 **/secrets/*
 !**/secrets/.gitkeep
+# apps/portfolio: upstream (and its docs) keep this beside the compose file, so an operator
+# following them lands it at the package root, outside secrets/. It is real addresses and
+# gitleaks does not flag an email list.
+allowed-emails.txt
+!*.example.txt
 
 # --- Runtime state (per-service bind mounts) ---
 volumes/

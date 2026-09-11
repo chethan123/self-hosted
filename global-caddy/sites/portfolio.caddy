@@ -1,0 +1,6 @@
+# The sidecar enforces the Google sign-in gate, so this hop must stay a plain pass-through —
+# no path rules, no auth here. Rewriting or stripping anything under /oauth2/* breaks the flow.
+@portfolio host portfolio.{$BASE_DOMAIN}
+handle @portfolio {
+	reverse_proxy 10.1.1.10:80
+}

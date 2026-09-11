@@ -1,0 +1,11 @@
+# The gate's allowlist, and the only authorization this instance has: one Google
+# address per line, blank lines and `#` ignored.
+#
+# Copy to `secrets/allowed-emails.txt` — real addresses, and `**/secrets/*` is what the repo
+# .gitignore covers. Upstream keeps it beside compose.yaml; here it would not be gitignored.
+#
+# Removing a line signs that person out on their next request. Restart `gate`
+# after editing — a single-file bind mount stops following a file replaced by rename.
+
+alice@gmail.com
+bob@gmail.com
