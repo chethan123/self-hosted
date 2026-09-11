@@ -1,0 +1,129 @@
+# Machine-readable contract for this app. Drives global-route generation, linting, and docs.
+# Migrated from github.com/chethan123/portfolio (its compose.yaml) rather than scaffolded.
+name: portfolio
+hostname: portfolio       # subdomain only; full host is <hostname>.{BASE_DOMAIN}
+vm_ip: 10.1.1.10          # reserved static IP of this app's VM
+sidecar_port: 80          # the ONE host port the Sidecar Caddy publishes (onto its :8080)
+
+needs_egress: true        # `gate` (Google) and `egress-proxy` (Yahoo) only; `app` has none
+secrets_mode: env         # env | file-secrets | hybrid
+
+# Requires Docker Engine 28.0+ on the VM. Not a preference: 26 ignores `gateway_mode_ipv4`
+# silently and 27 refuses it, and without it every container on an `internal` network still gets
+# a host route — which is most of the isolation below.
+min_docker_engine: "28.0"
+
+# --- deviations from the house standard, each deliberate ---------------------------------------
+#
+# Two name-level deviations, taken together for one reason: the upstream repo ships
+# scripts/smoke-test.sh, which asserts this stack's isolation and keys on these exact names
+# (`app` in 71 places; `for net in backend caddy-app caddy-gate worker-proxy` at :524). Renaming
+# forks this copy from the only test that proves the isolation still holds.
+deviations:
+  - rule: "the app service is named after the app slug — never `app`" # CLAUDE.md, Naming
+    taken: "service stays `app`; container_name is `app` too — one app per VM, so unambiguous"
+    why: "upstream smoke-test.sh keys on it. The rule's rationale is DNS for the sidecar's
+          reverse_proxy, and that sidecar ships in this same package — the coupling is internal
+          to the VM and cannot collide with another app."
+  - rule: "three per-VM networks: edge / frontend / backend"          # CLAUDE.md, Per-app networks
+    taken: "seven, upstream's, verbatim — see `networks` below"
+    why: "collapsing them would give `app` a direct route to `gate:4180` and `worker` a default
+          route off `worker-proxy`, deleting the isolation upstream spec 0018 and its ADR-0005
+          are built on. Strictly tighter than the house model, not looser."
+  - rule: "pinned image tags (never :latest)"                          # ADR-0003
+    taken: "ghcr.io/chethan123/portfolio-app:${APP_VERSION:-1} floats the major"
+    why: "this IS the upgrade mechanism — `pull_policy: always` + `up -d` rolls forward.
+          Pin APP_VERSION in .env to hold still or roll back."
+  - rule: "pinned image tags (never :latest)"                          # ADR-0003
+    taken: "postgres:17-alpine floats the minor, via the x-postgres-image anchor"
+    why: "what is load-bearing is that `db` and `dump` match — pg_dump refuses a server newer
+          than itself — and the anchor guarantees that. Pin both at once by editing the anchor."
+  - rule: "Docker file-secrets for high-value secrets on images that support it" # CLAUDE.md, Secrets
+    taken: "secrets_mode: env — every credential comes from the gitignored .env"
+    why: "POSTGRES_PASSWORD has three consumers and only `db` reads *_FILE: a file-secret would
+          cover one while the same value sat in `app`/`dump`'s environment anyway — seafile's
+          reasoning exactly. The gate's OAUTH2_PROXY_CLIENT_SECRET_FILE does exist, but ${VAR:?}
+          fails `up` naming the variable where a missing file only crash-loops the container,
+          and a trailing newline in that file yields 500s with no useful error (upstream #396)."
+  - rule: "the app package is self-contained under sparse-checkout"    # CLAUDE.md, Repository layout
+    taken: "scripts/dump-loop.sh is vendored from the upstream repo"
+    why: "the `dump` service bind-mounts it with create_host_path:false, and a VM checks out
+          apps/portfolio/ and nothing else. SYNC POINT — re-vendor when upstream changes it."
+
+# --- network mapping ---------------------------------------------------------------------------
+# Schema extension: this app keeps upstream's seven. The first three are the house three renamed;
+# the rest have no house equivalent.
+networks:
+  ingress:      {house: edge,     internal: false, note: "sidecar's published port"}
+  caddy-app:    {house: frontend, internal: true,  note: "sidecar <-> app"}
+  backend:      {house: backend,  internal: true,  note: "app/dump <-> db"}
+  caddy-gate:   {house: null,     internal: true,  note: "sidecar <-> gate. Held apart from
+                 caddy-app so `app` has no direct route to gate:4180"}
+  worker-proxy: {house: null,     internal: true,  note: "worker <-> egress-proxy. Allocates no
+                 gateway, so `worker` cannot reach the host's published ports either"}
+  egress-proxy: {house: null,     internal: false, note: "egress-proxy's default route — the
+                 CONNECT tunnel to five Yahoo hosts, ClientHello pinned"}
+  egress-gate:  {house: null,     internal: false, note: "gate's default route — Google. The one
+                 container here running as root"}
+
+# Caps, tmpfs, read_only and uids below are upstream's measured result, asserted by its
+# scripts/smoke-test.sh — NOT the output of this repo's /harden-container, which has never run
+# against this app. The `mem_limit`/`cpus`/`pids_limit` this migration ADDED are the exception:
+# upstream set them on `worker` and `egress-proxy` only, so the other five are starting values.
+hardening_verified: true
+hardening_verified_by: upstream scripts/smoke-test.sh
+limits_verified: false
+
+services:
+  db:
+    image_type: vanilla     # postgres:17-alpine, user 70:70
+    read_only: true
+    caps_added: []          # tighter than the house template's postgres: the data dir is
+                            # pre-owned via an empty bind-backed volume, so initdb never chowns
+    tmpfs_paths: [/var/run/postgresql]   # socket + lock; 3777 in-image, /run at 0755 would not do
+    limits_added_by_migration: true
+  dump:
+    image_type: vanilla     # postgres:17-alpine, user ${DUMP_UID}:${DUMP_GID}
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp]     # pg_dump stderr only; the archive goes straight to /dumps
+    limits_added_by_migration: true
+  app:
+    image_type: self-built  # ghcr.io/chethan123/portfolio-app, USER node (1000) in its Dockerfile
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp]
+    limits_added_by_migration: true
+  worker:
+    image_type: self-built  # same image, entrypoint server/price-worker.ts
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp]     # 64m
+    limits_added_by_migration: false   # upstream's — the container the design expects compromised
+  egress-proxy:
+    image_type: self-built  # same image, entrypoint server/egress-proxy.ts
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp]     # 64m
+    limits_added_by_migration: false   # upstream's
+  gate:
+    image_type: vanilla     # quay.io/oauth2-proxy/oauth2-proxy:v7.15.4-alpine
+    read_only: true
+    runs_as_root: true      # image sets no USER; pinning one would decide the allowlist's file
+                            # mode on the operator's behalf
+    caps_added: [DAC_READ_SEARCH]   # root's power to open a file it does not own IS this cap;
+                                    # without it: `failed opening authenticated-emails-file`
+    tmpfs_paths: [/tmp]
+    limits_added_by_migration: true
+  caddy:
+    image_type: vanilla     # caddy:2.8-alpine, user 65532:65532 — the Sidecar
+    read_only: true
+    caps_added: [NET_BIND_SERVICE]  # not for binding (8080 needs nothing) — /usr/bin/caddy's
+                                    # file capability cap_net_bind_service=ep needs it in the
+                                    # bounding set to exec at all
+    tmpfs_paths: [/config, /data]   # mode=1777; both root 0755 in-image. Clean logs only.
+    limits_added_by_migration: true
+
+# No NFS volumes. State is two bind mounts under ./volumes — see README.md, Backups.
+
+owner: chethan

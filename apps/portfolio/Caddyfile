@@ -1,0 +1,71 @@
+# Sidecar Caddy — app-specific edge. Plain HTTP; TLS is handled upstream by Global Caddy (ADR-0001).
+#
+# Single subdomain, so no host matcher and no BASE_DOMAIN dependency (contrast jellyfin, which
+# demuxes four). What is app-specific here is the gate: this file, not the app, is where
+# authentication is enforced, because this is the only published port on the VM.
+#
+# Taken from the upstream repo's Caddyfile. The house proxy in front is deliberately NOT trusted
+# with enforcement — a LAN device can dial this box's published port and land here.
+{
+	servers {
+		# Without this Caddy discards the house proxy's X-Forwarded-* and tells
+		# `app` every request arrived over plain HTTP. `private_ranges` is the
+		# honest bound — a LAN peer can forge these — affordable only because
+		# nothing below decides anything on them (upstream ARCHITECTURE.md §2).
+		trusted_proxies static private_ranges
+	}
+}
+
+# 8080, not the fleet's :80: the pinned unprivileged uid binds a high port with no kernel grant.
+# docker-compose.yml publishes ${SIDECAR_PORT:-80} onto it — change one, change both.
+:8080 {
+	# --- security headers (tighten per app) ---
+	# Repeated from the Global Caddy so they hold for a request that reaches this VM on the LAN.
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+	}
+
+	# The one exemption: machine-read, pinned body, no household data. Everything
+	# else, static assets included, is challenged.
+	handle /healthz {
+		reverse_proxy app:{$APP_PORT:3000}
+	}
+
+	# Ungated, and `handle` rather than a matcher on `reverse_proxy`: reverse_proxy
+	# sorts after handle, so a matcher would lose to the catch-all below.
+	handle /oauth2/* {
+		reverse_proxy gate:4180 {
+			# On top of the X-Forwarded-* reverse_proxy already sets.
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Uri {uri}
+		}
+	}
+
+	handle {
+		forward_auth gate:4180 {
+			uri /oauth2/auth
+
+			header_up X-Real-IP {remote_host}
+
+			# The verified address, nothing else. copy_headers deletes any
+			# client-supplied value first, so a browser cannot assert its own.
+			copy_headers X-Auth-Request-Email
+
+			# On non-2xx forward_auth copies the gate's response to the browser,
+			# and the gate answers a bare 401 — so build the handoff here. `rd`
+			# is relative on purpose: the sidecar refuses absolute redirects
+			# outside `whitelist_domains` (unset), a path is always same-origin.
+			# Known limit: {uri} interpolates raw and Caddy cannot percent-encode,
+			# so a target with two query parameters splits at its first `&` — upstream #92.
+			@unauthenticated status 401
+			handle_response @unauthenticated {
+				redir * /oauth2/sign_in?rd={uri}
+			}
+		}
+
+		reverse_proxy app:{$APP_PORT:3000}
+	}
+}
