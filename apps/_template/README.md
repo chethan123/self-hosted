@@ -8,13 +8,32 @@ _What this app is, why you run it, and any quirks worth remembering. Free-form n
 
 ## Deploy
 ```bash
-# on the app VM (sparse-checkout this app dir)
-cp .env.example .env                     # fill in real values
-echo -n '<db-password>' > secrets/db_password.txt
-docker compose up -d
+# on the app VM (sparse-checkout this app dir), as the NON-ROOT account that will own the backups
+cp .env.example .env                     # fill in real values; BACKUP_UID/GID = `id -u` / `id -g`
+mkdir -p volumes/app volumes/dumps volumes/backup-cache && chmod 0750 volumes/dumps
+echo -n '<db-password>' > secrets/db_password.txt && chmod 0640 secrets/db_password.txt
+# 0640, owned by you: db's entrypoint reads it as root (DAC_OVERRIDE) and the sidecar as BACKUP_UID.
+# Every file under a mounted source must be readable by BACKUP_UID, or the run fails (spec D13).
+
+# backups (docs/specs/backup-sidecar.md §6): one repository password — ESCROW IT — and one REST
+# login per target, whose bcrypt lines you add on restic-server (its README, "Onboarding a new app")
+openssl rand -hex 32 > secrets/restic-password
+for t in nfs rsync-net pcloud; do
+  printf 'RESTIC_REST_USERNAME=%s\nRESTIC_REST_PASSWORD=%s\n' <app-name> "$(openssl rand -hex 24)" > secrets/backup-$t.env
+done
+chmod 0400 secrets/restic-password secrets/backup-*.env
+
+docker compose up -d                     # both files — COMPOSE_FILE in .env
+docker compose logs -f dump              # until it reports the archive it wrote (it dumps at boot)
+docker compose run --rm --name backup-run backup run   # first backup by hand; check the Kuma monitor went up
 ```
 
 ## Notes
 - Egress: <needs internet? why>
 - Hardening deviations: <anything flipped off read_only, extra caps, and why>
-- Backups: `volumes/` holds all state — snapshot/tar it.
+- Backups: what `docker-compose.backup.yml` binds under `/backup` (and `app.meta.yaml`'s
+  `backup:` block lists) — and nothing else. <what is NOT kept and why: caches, NFS media, …>.
+  Restore: `mkdir restore && docker compose run --rm --name backup-restore -v ./restore:/restore backup -n nfs restore latest --target /restore`
+  (spec §6; `mkdir` first or Compose creates it root-owned; `--name` because `container_name` is
+  fixed); re-`chown` before moving into `volumes/`. After editing `.env` or rotating any
+  `secrets/backup-*` file: `docker compose up -d --force-recreate backup` (single-file binds).

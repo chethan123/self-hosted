@@ -10,7 +10,9 @@ shared, TLS-terminating Global Caddy.
 |---|---|
 | `apps/<name>/` | one app package (`apps/_template/` is the canonical shape) |
 | `global-caddy/` | the shared public reverse proxy (wildcard TLS, subdomain routing) |
-| `docs/adr/` | why the architecture is the way it is (ADR 0001–0005) |
+| `images/backup-sidecar/` | the backup sidecar image every app runs (ADR-0006) |
+| `docs/adr/` | why the architecture is the way it is (ADR 0001–0006) |
+| `docs/specs/` | full designs: restic-server, backup-sidecar |
 | `CONTEXT.md` | domain glossary |
 | `CLAUDE.md` | conventions + golden rules |
 | `.claude/skills/` | `/onboard-app`, `/harden-container` |
@@ -34,8 +36,8 @@ interviews you, scaffolds the package, writes the global route, and runs the har
 git clone --filter=blob:none --sparse <repo> && cd <repo>
 git sparse-checkout set apps/<name>
 cd apps/<name>
-cp .env.example .env                 # fill in real values
-# create any secrets/*.txt file-secrets
+cp .env.example .env                 # fill in real values (COMPOSE_FILE pulls in docker-compose.backup.yml)
+# create any secrets/*.txt file-secrets, plus the four backup secrets (the app's README)
 docker compose up -d
 ```
 
@@ -45,3 +47,5 @@ docker compose up -d
 - Only Caddy publishes host ports. Apps and DBs stay on internal Docker networks.
 - Hardened by default (`read_only`, `cap_drop:[ALL]`, non-root); loosen per-app with a recorded reason.
 - The real base domain is never committed — it's `{$BASE_DOMAIN}` from a gitignored `.env`.
+- Every app ships its own backup: `docker-compose.backup.yml` + the `backup` sidecar, non-root,
+  databases dumped not copied (ADR-0006, `docs/specs/backup-sidecar.md`).

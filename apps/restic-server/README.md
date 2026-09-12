@@ -186,7 +186,9 @@ through a backup. Pin a current release in practice (spec §13).
 # very first call, after the credential has already crossed the LAN in cleartext.
 export RESTIC_REPOSITORY="rest:https://backup.<your-domain>/nfs/example-app/"
 export RESTIC_REST_USERNAME=example-app
-export RESTIC_REST_PASSWORD_FILE=/run/secrets/rest_password   # or RESTIC_REST_PASSWORD
+export RESTIC_REST_PASSWORD=…        # no *_FILE variant exists for this one (restic
+                                     # internal/backend/rest/config.go); the fleet's sidecar loads
+                                     # it from a dotenv file-secret instead
 export RESTIC_PASSWORD_FILE=/run/secrets/restic_password      # repo encryption key — separate
 restic init
 restic backup /data --tag nightly
@@ -200,7 +202,8 @@ credential — three separate uploads, no cross-target deduplication, by design 
 `locks/` from the delete ban).
 
 **Client-side backup jobs (what actually runs `restic backup` on each app VM) are not part of
-this package** — deferred, along with `apps/_template/` and `/onboard-app` changes (spec §12).
+this package** — they are the backup sidecar every app package carries: ADR-0006,
+`docs/specs/backup-sidecar.md`, `apps/portfolio/docker-compose.backup.yml` as the reference.
 
 ## Notes
 
@@ -233,8 +236,9 @@ this package** — deferred, along with `apps/_template/` and `/onboard-app` cha
 - **Availability isolation is not achieved.** Append-only permits unlimited *additions*; one
   compromised app can exhaust the NFS export or either cloud target's quota and stop every other
   app's backups. Confidentiality and integrity are covered (spec §10); availability is not.
-- **No monitoring or freshness alerting.** A backup system that stops silently is worse than
-  none — the largest known gap, deferred with the client-side work (spec §11).
+- **No server-side monitoring.** Freshness is watched per app: each backup sidecar pushes one
+  Uptime Kuma heartbeat per run (`docs/specs/backup-sidecar.md` D11). Nothing here notices a
+  target that silently stops accepting writes for everyone — that stays open (spec §11).
 - **Verify at bring-up:** one `curl -v` confirming `handle_path` preserves the trailing slash
   (`/nfs/example-app/` → `/example-app/`); the client examples above assume it does.
 - **The maintenance path (`forget`/`prune`/`check`) is designed, not built.** It runs from a

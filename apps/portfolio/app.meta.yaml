@@ -63,6 +63,12 @@ deviations:
     why: "left as upstream had them; these two are the only services it bounded, and its smoke
           test asserts the exact mem_limit/pids_limit values. Same shape as jellyfin's
           `cpus_unset`. The other five carry limits this migration added — see limits_verified."
+  - rule: "three per-VM networks: edge / frontend / backend"          # CLAUDE.md, Per-app networks
+    taken: "an eighth, `backup-egress`, for the backup sidecar alone — docker-compose.backup.yml"
+    why: "the sidecar needs a route to backup.{$BASE_DOMAIN} and to Uptime Kuma. `egress-gate` and
+          `egress-proxy` are one-container segments by upstream's design (spec 0018); putting the
+          sidecar beside either would give it a path to that container it has no reason to have.
+          The house layout's `edge` does not exist here — `ingress` is the sidecar Caddy's."
   - rule: "the app package is self-contained under sparse-checkout"    # CLAUDE.md, Repository layout
     taken: "scripts/dump-loop.sh is vendored from the upstream repo"
     why: "the `dump` service bind-mounts it with create_host_path:false, and a VM checks out
@@ -112,6 +118,9 @@ networks:
                  CONNECT tunnel to five Yahoo hosts, ClientHello pinned"}
   egress-gate:  {house: null,     internal: false, note: "gate's default route — Google. The one
                  container here running as root"}
+  backup-egress: {house: edge,    internal: false, note: "the backup sidecar's route to
+                 backup.{$BASE_DOMAIN} and Uptime Kuma; nothing else is on it. Declared in
+                 docker-compose.backup.yml"}
 
 # false, like every other package here: /harden-container has never run against this app, and no
 # VM exists at 10.1.1.10 yet. The caps, tmpfs, read_only and uid lines below are upstream's
@@ -166,6 +175,31 @@ services:
                                     # file capability cap_net_bind_service=ep needs it in the
                                     # bounding set to exec at all
     tmpfs_paths: [/config, /data]   # mode=1777; both root 0755 in-image. Clean logs only.
+  # --- docker-compose.backup.yml ---
+  backup:
+    image_type: self-built  # ghcr.io/chethan123/backup-sidecar:1.0.0 — images/backup-sidecar/,
+                            # user ${DUMP_UID}:${DUMP_GID}. Not yet run anywhere (ADR-0004).
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp, /resticprofile]   # 64m; 1m — the crontab
+
+# Backup contract (ADR-0006, docs/specs/backup-sidecar.md). Mirrors docker-compose.backup.yml.
+# The reference implementation of the standard — the first package to carry this block.
+backup:
+  image: ghcr.io/chethan123/backup-sidecar:1.0.0
+  user: "${DUMP_UID}:${DUMP_GID}"   # the dump account owns the whole set — see .env.example
+  schedule: "0 3 * * *"              # cron, UTC; an hour after DUMP_AT=02. Overridable: BACKUP_SCHEDULE
+  sources:                           # = the :ro binds under /backup; nothing else is visible
+    - {host_path: ./volumes/dumps, mount: /backup/dumps}       # the database, as verified pg_dump archives
+    - {host_path: ./secrets,       mount: /backup/secrets}     # allowed-emails.txt + the four backup secrets (spec D9)
+    - {host_path: ./.env,          mount: /backup/env/.env}    # every credential of this stack (spec D9)
+  not_sources:                       # deliberate omissions, so nobody "fixes" them
+    - {host_path: ./volumes/db/data, why: "uid 70, 0700; covered by the dumps — never read live (spec D6)"}
+    - {host_path: ./volumes/caddy,   why: "plain :80 sidecar; nothing irreplaceable"}
+    - {host_path: ./volumes/backup-cache, why: "restic's own cache"}
+  dumps:
+    - {service: dump, engine: postgres, of: db, into: ./volumes/dumps, at: "02:00 UTC"}  # upstream's, docker-compose.yml
+  ping: BACKUP_PING_URL              # .env; Uptime Kuma push monitor, one push per run
 
 # No NFS volumes. State is two bind mounts under ./volumes — see README.md, Backups.
 

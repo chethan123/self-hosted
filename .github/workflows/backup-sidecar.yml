@@ -1,0 +1,82 @@
+# Builds images/backup-sidecar and publishes it to ghcr on a `backup-sidecar/v*` tag
+# (images/backup-sidecar/README.md, "Release"). Pull requests that touch the image build it and
+# run the smoke test without pushing. The package must be flipped to public once, by hand.
+name: backup-sidecar image
+
+on:
+  push:
+    tags: ["backup-sidecar/v*"]
+  pull_request:
+    paths:
+      - "images/backup-sidecar/**"
+      - ".github/workflows/backup-sidecar.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/backup-sidecar
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: images/backup-sidecar
+          load: true
+          tags: ${{ env.IMAGE }}:ci
+
+      # As a non-root user, the way every app runs it: the entrypoint must exec resticprofile,
+      # and the baked profile must render every target's restic command with only the documented
+      # inputs present (dummy values; nothing is contacted).
+      - name: Smoke test
+        run: |
+          set -eu
+          docker run --rm --user 65534:65534 "$IMAGE:ci" version
+          docker run --rm --user 65534:65534 --entrypoint supercronic "$IMAGE:ci" -help 2>&1 | grep -q passthrough-logs
+          tmp=$(mktemp -d)
+          printf 'dummy\n' > "$tmp/restic-password"
+          for t in nfs rsync-net pcloud; do
+            printf 'RESTIC_REST_USERNAME=smoke\nRESTIC_REST_PASSWORD=dummy\n' > "$tmp/backup-$t.env"
+          done
+          chmod 0644 "$tmp"/*
+          for t in nfs rsync-net pcloud; do
+            docker run --rm --user 65534:65534 \
+              -e BACKUP_SLUG=smoke -e BASE_DOMAIN=example.test \
+              -v "$tmp:/run/secrets:ro" \
+              "$IMAGE:ci" -n "$t" show | tee "$tmp/show-$t.txt"
+            grep -q "backup.example.test/$t/smoke/" "$tmp/show-$t.txt"
+          done
+
+      - name: Log in to ghcr
+        if: startsWith(github.ref, 'refs/tags/backup-sidecar/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Version tag from the git tag
+        if: startsWith(github.ref, 'refs/tags/backup-sidecar/v')
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=match,pattern=backup-sidecar/v(.*),group=1
+
+      - name: Push
+        if: startsWith(github.ref, 'refs/tags/backup-sidecar/v')
+        uses: docker/build-push-action@v6
+        with:
+          context: images/backup-sidecar
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

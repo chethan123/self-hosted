@@ -52,6 +52,23 @@ The iterative process of starting a maximally-locked-down container, observing w
 capability or tmpfs mount. Performed by the `/harden-container` skill.
 _Avoid_: security pass, lockdown
 
+**Backup sidecar**:
+The `backup` service in a package's `docker-compose.backup.yml`: the house image
+(`images/backup-sidecar/`, resticprofile + supercronic) pushing the backup set to every
+restic-server target on the app's schedule, as the account that owns the set.
+_Avoid_: backup agent, restic container, backup job
+
+**Backup set**:
+What a package backs up — exactly the read-only binds under `/backup/<name>` in its
+`docker-compose.backup.yml`, mirrored in `app.meta.yaml`'s `backup.sources`. Nothing else is
+visible to the sidecar, so nothing else can be backed up.
+_Avoid_: backup paths, include list, sources (alone)
+
+**Dump service**:
+A per-database service in the database engine's own image that writes a verified dump into
+`volumes/dumps` on its own schedule, so the backup set holds dumps and never a live datadir.
+_Avoid_: db backup, exporter
+
 **File-secret**:
 A high-value secret mounted as a file at `/run/secrets/<name>` and read via the `*_FILE`
 convention, rather than injected as an environment variable.

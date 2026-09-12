@@ -120,7 +120,8 @@ vs `:424-433`; `rest-server repo/repo.go:766-797` has no append-only check).
 ```console
 export RESTIC_REPOSITORY="rest:https://backup.{$BASE_DOMAIN}/nfs/jellyfin/"
 export RESTIC_REST_USERNAME=jellyfin
-export RESTIC_REST_PASSWORD_FILE=/run/secrets/rest_password   # or RESTIC_REST_PASSWORD
+export RESTIC_REST_PASSWORD=…        # environment only — restic has no *_FILE variant for the
+                                     # REST login (internal/backend/rest/config.go:85-86)
 export RESTIC_PASSWORD_FILE=/run/secrets/restic_password
 restic init
 ```
@@ -503,14 +504,15 @@ corruption vector.
 | `rclone serve restic` does not verify uploaded objects | **VERIFIED** — straight to `RcatSize` (`restic.go:435`), no hash check, unlike rest-server (`repo/repo.go:601-613`). Narrower than it sounds: restic verifies blobs before sending (`repository.go:409-452`), so the gap is in-transit or at-server corruption over TLS; `check --read-data` catches it later. |
 | Non-atomic writes on SFTP and pcloud | **VERIFIED** — both declare `PartialUploads: true`. An interrupted upload can leave a truncated pack under its final name; in append-only mode it can be neither overwritten (`restic.go:424-433`) nor deleted, so the maintenance path must remove it. The affected backup run fails immediately rather than retrying — restic treats 403 as permanent (`internal/backend/rest/rest.go:178-190`) — and the next run picks new pack IDs, so the repository is not wedged. |
 | Stale rclone object cache after maintenance | **VERIFIED** — §9. Restart or `--cache-objects=false`. |
-| No monitoring | **OPEN.** A backup system that stops silently is worse than none. Largest known gap; deferred with the client-side work. |
+| No monitoring | **CLOSED on the client side** — every backup sidecar pushes one Uptime Kuma heartbeat per run (`docs/specs/backup-sidecar.md` D11). **OPEN on the server side**: nothing here notices a target that stops accepting writes for everyone. |
 | htpasswd files hand-maintained across three services | **ACCEPTED for now.** Rots quickly — the fleet is ~33 routed services, not 3. The follow-on should derive them from `app.meta.yaml`. |
 | Backrest (`10.1.1.250`) may still target the retired `10.1.1.200` | **OPEN** — repointing it belongs to the deferred client-side work (§12). |
 
 ## 12. Deferred work
 
-1. Client-side backup jobs; `apps/_template/` sidecar; `backup:` block in `app.meta.yaml`;
-   `/onboard-app` step.
+1. ~~Client-side backup jobs; `apps/_template/` sidecar; `backup:` block in `app.meta.yaml`;
+   `/onboard-app` step.~~ **Done** — ADR-0006, `docs/specs/backup-sidecar.md`; retrofits of the
+   remaining packages are listed there (§11).
 2. `apps/restic-maintenance/` — the VM from §9.
 3. Generating the three htpasswd files and the maintenance schedule from declared intent.
 4. Monitoring and freshness alerting.

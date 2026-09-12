@@ -25,6 +25,32 @@ services:
     read_only: true
     caps_added: [CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
     tmpfs_paths: [/tmp, /run]
+  # --- docker-compose.backup.yml ---
+  backup:
+    image_type: self-built   # ghcr.io/chethan123/backup-sidecar — images/backup-sidecar/, user ${BACKUP_UID}:${BACKUP_GID}
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp, /resticprofile]   # 64m; 1m — the crontab
+  dump:
+    image_type: vanilla      # postgres, SAME tag as db — user ${BACKUP_UID}:${BACKUP_GID}
+    read_only: true
+    caps_added: []
+    tmpfs_paths: [/tmp]      # 16m — pg_dump stderr only
+
+# Backup contract (ADR-0006, docs/specs/backup-sidecar.md). Mirrors docker-compose.backup.yml —
+# the audit trail for what is kept, as whom, and when.
+backup:
+  image: ghcr.io/chethan123/backup-sidecar:1.0.0
+  user: "${BACKUP_UID}:${BACKUP_GID}"   # owner of every path under sources; the dump account
+  schedule: "0 3 * * *"                  # cron, UTC; this app's choice — after the dump
+  sources:                               # = the :ro binds under /backup; nothing else is visible
+    - {host_path: ./volumes/app,   mount: /backup/app}
+    - {host_path: ./volumes/dumps, mount: /backup/dumps}
+    - {host_path: ./secrets,       mount: /backup/secrets}     # encrypted at rest; spec D9
+    - {host_path: ./.env,          mount: /backup/env/.env}
+  dumps:                                 # every database, by its own engine; the datadir is never a source
+    - {service: dump, engine: postgres, of: db, into: ./volumes/dumps, at: "02:00 UTC"}
+  ping: BACKUP_PING_URL                  # .env; Uptime Kuma push monitor, one push per run
 
 # NFS volumes (optional). Access enforced at the container mount (:ro default, :rw opt-in);
 # daemon always mounts NFS `rw` with `soft` options.
