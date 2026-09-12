@@ -78,7 +78,7 @@ are the user's. Do not run anything until the package is scaffolded and confirme
    (`restic-password` — escrow it — and `backup-{nfs,rsync-net,pcloud}.env`), `mkdir` +
    `chown` for `volumes/backup-cache` and `volumes/dumps`, the slug's three bcrypt lines on
    restic-server, an Uptime Kuma push monitor for `BACKUP_PING_URL`, then
-   `docker compose run --rm backup run` and one restore.
+   `docker compose run --rm --name backup-run backup run` and one restore.
 
 ## Mode: migrate
 

@@ -90,7 +90,8 @@ package's egress network, and sees exactly the paths bound under `/backup`.
 5. On the VM: create the four file-secrets (below), `mkdir` + `chown` `volumes/backup-cache`
    and `volumes/dumps`, add the slug's three bcrypt lines on restic-server (its README,
    "Onboarding a new app"), create the Uptime Kuma push monitor, `docker compose up -d`.
-6. `docker compose run --rm backup run` once by hand; confirm the push landed; do one restore.
+6. `docker compose run --rm --name backup-run backup run` once by hand; confirm the push landed;
+   do one restore.
 
 ### Secrets
 
@@ -111,19 +112,23 @@ chmod 0400 secrets/restic-password secrets/backup-*.env   # owned by the sidecar
 ### Restore
 
 ```bash
-docker compose run --rm backup -n nfs snapshots
-mkdir restore && docker compose run --rm -v ./restore:/restore backup -n nfs restore latest --target /restore
+docker compose run --rm --name backup-snapshots backup -n nfs snapshots
+mkdir restore && docker compose run --rm --name backup-restore -v ./restore:/restore \
+  backup -n nfs restore latest --target /restore
 ```
 
-Any target works the same (`-n rsync-net`, `-n pcloud`). The restore lands owned by the
-sidecar's account: re-`chown` to each service's UID before moving it into `volumes/`. Recommended,
-not enforced: one restore after the first bring-up, and after every image bump.
+`--name` is required: `container_name: backup` is fixed, and a bare `compose run` would try to
+reuse the scheduled container's name and collide with it. Any target works the same
+(`-n rsync-net`, `-n pcloud`). The restore lands owned by the sidecar's account: re-`chown` to
+each service's UID before moving it into `volumes/`. Recommended, not enforced: one restore after
+the first bring-up, and after every image bump. A restore started while a scheduled run holds the
+profile lock waits for it (`restic-lock-retry-after`), so restore outside the window.
 
 ### One run by hand, other restic commands
 
 ```bash
-docker compose run --rm backup run            # every target, then the Kuma push
-docker compose run --rm backup -n nfs stats   # anything resticprofile accepts
+docker compose run --rm --name backup-run backup run            # every target, then the Kuma push
+docker compose run --rm --name backup-stats backup -n nfs stats # anything resticprofile accepts
 ```
 
 ## 7. Design decisions
@@ -198,6 +203,11 @@ supercronic skips a run whose predecessor is still going (its default) and valid
 expression at start — an invalid `BACKUP_SCHEDULE` exits the container, which
 `restart: unless-stopped` makes visible in `docker compose ps`.
 
+A container killed mid-run (a `compose down` past `stop_grace_period`) leaves a lock in the
+repository it was writing. The next run clears it once it is older than `restic-stale-lock-age`
+(2 h, `profiles.yaml`) — `unlock` is permitted on the append-only endpoints — and waits
+`restic-lock-retry-after` (1 m) on a younger one.
+
 ### The compose override (`docker-compose.backup.yml`)
 
 The `backup` service, canonical form in `apps/_template/docker-compose.backup.yml`:
@@ -210,9 +220,9 @@ The `backup` service, canonical form in `apps/_template/docker-compose.backup.ym
 | `networks` | the package's egress network only (`edge` in the house layout) | reaches Global Caddy; needs nothing else. It is not on `frontend`/`backend`. |
 | `environment` | `BACKUP_SLUG`, `BASE_DOMAIN=${BASE_DOMAIN:?}`, `BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-<default>}`, `BACKUP_PING_URL=${BACKUP_PING_URL:?}`, `TZ=UTC` | D12; UTC pinned so the cron field means one thing |
 | `secrets` | `restic-password`, `backup-nfs.env`, `backup-rsync-net.env`, `backup-pcloud.env` — `file:` secrets from `./secrets/` | D8 |
-| `volumes` | the backup set, long syntax, `read_only: true`, `create_host_path: false`; `./volumes/backup-cache:/cache` (`rw`, same `create_host_path: false`) | D5; the cache persists across restarts and never enters the set |
+| `volumes` | the backup set, long syntax, `read_only: true`, `create_host_path: false`; `./volumes/backup-cache:/cache` (`rw`, same `create_host_path: false`) | D5; the cache persists across restarts and never enters the set. **A single-file bind (`./.env`) stops following a file replaced by rename** — most editors do that — so after editing `.env`, `docker compose up -d --force-recreate backup` (plain `up -d` recreates only when a variable the service uses changed). Directory binds are unaffected. |
 | `tmpfs` | `/tmp:size=64m`, `/resticprofile:size=1m` | `read_only: true` root; `/resticprofile` also masks the base image's `VOLUME` |
-| hardening | `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `read_only: true`, `mem_limit`, `cpus`, `pids_limit: 64` | ADR-0003. restic's memory grows with repository size; the template's `512m` is a starting value |
+| hardening | `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `read_only: true`, `mem_limit`, `cpus`, `pids_limit: 256` | ADR-0003. restic's memory grows with repository size; the template's `512m` is a starting value. `pids.max` counts threads, and restic and resticprofile are Go binaries — 64 is not enough on a many-core VM |
 | `depends_on` | the dump service, when there is one | ordering on `up` only; the schedule does the real ordering |
 
 Compose file-secrets in a non-swarm project are bind mounts of the host file with the host's

@@ -61,7 +61,7 @@ app"). In Uptime Kuma, add a **push** monitor (heartbeat 24 h + grace), and put 
 
 ```bash
 docker compose up -d                              # both files — COMPOSE_FILE in .env
-docker compose run --rm backup run                # first backup by hand; the monitor should go up
+docker compose run --rm --name backup-run backup run   # first backup by hand; the monitor should go up
 ```
 
 Finally, on each Global Caddy VM once the route is pulled:
@@ -83,9 +83,13 @@ upstream's release notes.
 ## Restoring
 
 ```bash
-docker compose run --rm backup -n nfs snapshots                  # or -n rsync-net, -n pcloud
-mkdir restore && docker compose run --rm -v ./restore:/restore backup -n nfs restore latest --target /restore
+docker compose run --rm --name backup-snapshots backup -n nfs snapshots       # or -n rsync-net, -n pcloud
+mkdir restore && docker compose run --rm --name backup-restore -v ./restore:/restore \
+  backup -n nfs restore latest --target /restore
 ```
+
+`--name` for the same reason as `dump verify` below: `container_name: backup` is fixed and the
+scheduled container holds it.
 
 `restore/dumps/` then holds the archives, owned by `DUMP_UID`; `dump verify` (below) checks one,
 and upstream's `docs/operating.md` says how to load it. `restore/secrets/` and `restore/env/.env`
@@ -166,7 +170,9 @@ convention, and a bare `compose run` would reuse it and collide with the running
   every uploaded statement in plaintext; the script writes them 0640 (`umask 027`) but never
   touches the directory's own mode, so `chmod 0750 volumes/dumps` after creating it is on you.
   One Uptime Kuma push per run (`status=up`, or `down` naming the failed targets); there is no
-  other monitoring. **Not yet run on a VM** — the sidecar joins `hardening_verified: false`.
+  other monitoring. `.env` is a single-file bind, like the allowlist: after editing it,
+  `docker compose up -d --force-recreate backup`. **Not yet run on a VM** — the sidecar joins
+  `hardening_verified: false`.
 
 - **Not vendored:** upstream's `compose.dev.yaml`, `compose.test.yaml`, `compose.external-db.yaml`
   and `scripts/smoke-test.sh`. The smoke test cannot run against this package under any

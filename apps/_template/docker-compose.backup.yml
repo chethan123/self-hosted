@@ -28,6 +28,8 @@ services:
       - {type: bind, source: ./volumes/app,   target: /backup/app,      read_only: true, bind: {create_host_path: false}}
       - {type: bind, source: ./volumes/dumps, target: /backup/dumps,    read_only: true, bind: {create_host_path: false}}
       - {type: bind, source: ./secrets,       target: /backup/secrets,  read_only: true, bind: {create_host_path: false}}
+      # A single-file bind stops following a file replaced by rename: after editing .env,
+      # `docker compose up -d --force-recreate backup`.
       - {type: bind, source: ./.env,          target: /backup/env/.env, read_only: true, bind: {create_host_path: false}}
       # restic's cache — persists across restarts, owned by BACKUP_UID, never part of the set.
       - {type: bind, source: ./volumes/backup-cache, target: /cache, bind: {create_host_path: false}}
@@ -38,7 +40,7 @@ services:
     tmpfs: ["/tmp:size=64m", "/resticprofile:size=1m"]
     mem_limit: 512m                          # starting value — restic's memory grows with the repository
     cpus: "1.0"
-    pids_limit: 64
+    pids_limit: 256                          # threads count: restic + resticprofile are Go
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}

@@ -33,6 +33,8 @@ services:
       # by the dumps. volumes/caddy holds nothing irreplaceable (plain :80, no certificates).
       - {type: bind, source: ./volumes/dumps, target: /backup/dumps,    read_only: true, bind: {create_host_path: false}}
       - {type: bind, source: ./secrets,       target: /backup/secrets,  read_only: true, bind: {create_host_path: false}}
+      # Single-file bind: stops following .env once an editor replaces it by rename —
+      # `docker compose up -d --force-recreate backup` after editing it.
       - {type: bind, source: ./.env,          target: /backup/env/.env, read_only: true, bind: {create_host_path: false}}
       - {type: bind, source: ./volumes/backup-cache, target: /cache, bind: {create_host_path: false}}
     security_opt:
@@ -47,7 +49,7 @@ services:
     # will not need the headroom for years.
     mem_limit: 512m
     cpus: "1.0"
-    pids_limit: 64
+    pids_limit: 256   # threads count: restic + resticprofile are Go
 
 networks:
   backup-egress:
