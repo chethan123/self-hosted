@@ -90,8 +90,11 @@ package's egress network, and sees exactly the paths bound under `/backup`.
 5. On the VM: create the four file-secrets (below), `mkdir` + `chown` `volumes/backup-cache`
    and `volumes/dumps`, add the slug's three bcrypt lines on restic-server (its README,
    "Onboarding a new app"), create the Uptime Kuma push monitor, `docker compose up -d`.
-6. `docker compose run --rm --name backup-run backup run` once by hand; confirm the push landed;
-   do one restore.
+6. Wait for the first dump to be published (`docker compose logs -f dump` until it reports the
+   archive it wrote; the Postgres script dumps at boot when it has no recent success), then
+   `docker compose run --rm --name backup-run backup run` once by hand; confirm the push landed;
+   do one restore. The runner refuses an empty source directory, so a too-early first run fails
+   rather than blessing an empty snapshot.
 
 ### Secrets
 
@@ -121,8 +124,11 @@ mkdir restore && docker compose run --rm --name backup-restore -v ./restore:/res
 reuse the scheduled container's name and collide with it. Any target works the same
 (`-n rsync-net`, `-n pcloud`). The restore lands owned by the sidecar's account: re-`chown` to
 each service's UID before moving it into `volumes/`. Recommended, not enforced: one restore after
-the first bring-up, and after every image bump. A restore started while a scheduled run holds the
-profile lock waits for it (`restic-lock-retry-after`), so restore outside the window.
+the first bring-up, and after every image bump. A restore may overlap a scheduled run: restic's
+`restore` takes a read lock and `backup` an append lock, neither exclusive (`cmd/restic/lock.go`),
+and the shared cache is written atomically; only `check` and `prune` are exclusive, and those never
+run here (restic-server §9). The one thing a `compose run` is *not* serialized against is the
+runner itself — there is no cross-container lock, by design (§8, the profile).
 
 ### One run by hand, other restic commands
 
@@ -167,10 +173,16 @@ and gives the sidecar its one writable scratch path for the crontab and resticpr
 ### The profile (`profiles.yaml`)
 
 `base` — `password-file: /run/secrets/restic-password`, `cache-dir: /cache`, `initialize: true`
-(append-only permits `init`; restic-server §6), `lock: /resticprofile/lock` +
-`force-inactive-lock`, `backup: {source: [/backup], host: <slug>, tag: [<slug>],
-exclude-caches: true}`. `--host` is set explicitly: a container's hostname is not stable, and
-restic's snapshot identity keys on it.
+(append-only permits `init`; restic-server §6), `backup: {source: [/backup], host: <slug>,
+tag: [<slug>], exclude-caches: true, exclude: ["*.part"]}`. `--host` is set explicitly: a
+container's hostname is not stable, and restic's snapshot identity keys on it. `*.part` is the
+dump contract's staging name (below): a run that overlaps a slow dump must not capture a
+half-written archive.
+
+No resticprofile `lock:`. It would live in one container's private tmpfs and its staleness test
+is a PID lookup (`lock/lock.go`, `process.PidExists`), so across containers — a `compose run`
+beside the scheduled one — it is either invisible or wrongly "stale". Sequencing within a run is
+the runner's; concurrency against the repository is restic's own lock.
 
 `nfs`, `rsync-net`, `pcloud` — `inherit: base`; `repository:
 rest:https://backup.{{ .Env.BASE_DOMAIN }}/<target>/{{ .Env.BACKUP_SLUG }}/`; `env-file:
@@ -181,19 +193,21 @@ probe), and the rendered command is `restic backup --cache-dir=/cache --exclude-
 /backup`.
 
 Deliberately absent: `one-file-system` (each `/backup/<name>` is its own mount and would be
-skipped), `no-error-on-warning` (D13), anything retention- or check-shaped (403 on the server).
+skipped), `no-error-on-warning` (D13), `lock` (above), anything retention- or check-shaped (403 on
+the server).
 
 ### The entrypoint (`backup`)
 
 | Command | Does |
 |---|---|
 | `schedule` (default) | validates, writes `<BACKUP_SCHEDULE> /usr/local/bin/backup run` to `/resticprofile/crontab`, `exec supercronic -passthrough-logs` on it |
-| `run` | validates; for each target in `BACKUP_TARGETS`: `resticprofile -n <target> backup`; then one Kuma push — `up` with the elapsed time, or `down` naming the failed targets; exit 1 on any failure |
+| `run` | validates, and refuses if any `/backup/<name>/` is an empty directory (a dump not yet run, a bind to nowhere — never something to snapshot and ping `up` for); for each target in `BACKUP_TARGETS`: `resticprofile -n <target> backup`; then one Kuma push — `up` with the elapsed time, or `down` naming the failed targets; exit 1 on any failure |
 | anything else | `exec resticprofile -c /etc/resticprofile/profiles.yaml "$@"` — restore, snapshots, stats |
 
 Validation refuses to start, naming the fault: uid 0; missing `BACKUP_SLUG`, `BASE_DOMAIN`,
 `BACKUP_SCHEDULE`, `BACKUP_PING_URL`; any of the four secrets missing or unreadable as the
-running uid; `/backup` empty; `/cache` or `/resticprofile` not writable.
+running uid; `/backup` empty; `/cache` not writable; (`schedule` only) `/resticprofile` not
+writable.
 
 `BACKUP_PING_URL` is Kuma's push URL. Its query (`?status=up&msg=OK&ping=`) is stripped and
 rebuilt from the result, so a URL pasted verbatim from Kuma cannot send `status` twice. The
@@ -221,12 +235,17 @@ The `backup` service, canonical form in `apps/_template/docker-compose.backup.ym
 | `environment` | `BACKUP_SLUG`, `BASE_DOMAIN=${BASE_DOMAIN:?}`, `BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-<default>}`, `BACKUP_PING_URL=${BACKUP_PING_URL:?}`, `TZ=UTC` | D12; UTC pinned so the cron field means one thing |
 | `secrets` | `restic-password`, `backup-nfs.env`, `backup-rsync-net.env`, `backup-pcloud.env` — `file:` secrets from `./secrets/` | D8 |
 | `volumes` | the backup set, long syntax, `read_only: true`, `create_host_path: false`; `./volumes/backup-cache:/cache` (`rw`, same `create_host_path: false`) | D5; the cache persists across restarts and never enters the set. **A single-file bind (`./.env`) stops following a file replaced by rename** — most editors do that — so after editing `.env`, `docker compose up -d --force-recreate backup` (plain `up -d` recreates only when a variable the service uses changed). Directory binds are unaffected. |
-| `tmpfs` | `/tmp:size=64m`, `/resticprofile:size=1m` | `read_only: true` root; `/resticprofile` also masks the base image's `VOLUME` |
+| `tmpfs` | `/tmp:size=64m`, `/resticprofile:size=1m` | `read_only: true` root; `/resticprofile` holds the crontab and masks the base image's `VOLUME` |
 | hardening | `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `read_only: true`, `mem_limit`, `cpus`, `pids_limit: 256` | ADR-0003. restic's memory grows with repository size; the template's `512m` is a starting value. `pids.max` counts threads, and restic and resticprofile are Go binaries — 64 is not enough on a many-core VM |
 | `depends_on` | the dump service, when there is one | ordering on `up` only; the schedule does the real ordering |
 
 Compose file-secrets in a non-swarm project are bind mounts of the host file with the host's
 ownership and mode: the four files must be readable by the sidecar's uid (`0400`, owned by it).
+Being single-file binds, they stop following a file replaced by rename — which is how editors and
+most secret tooling write. **Rotating any of the four (or `.env`) ends with
+`docker compose up -d --force-recreate backup`**; until then the running sidecar authenticates
+with the old value and fails. Same mechanism restic-server's README documents for its htpasswd
+files.
 
 ### Identity and readability
 
@@ -244,11 +263,13 @@ Every database in a package has one. Requirements, all met by `apps/_template/sc
 
 1. Runs in the database engine's own image, **at the same tag as the server**.
 2. Runs as the backup set's owner, never root, on the `backend` network only.
-3. Writes into `volumes/dumps` atomically (`.part` then rename, same filesystem), `0640`, and
-   **verifies** the archive whole before publishing it.
+3. Writes into `volumes/dumps` atomically (a `*.part` staging name, then rename on the same
+   filesystem — the profile excludes `*.part`, so a run overlapping a slow dump captures only
+   published archives), `0640`, and **verifies** the archive whole before publishing it.
 4. Applies its own retention (`DUMP_KEEP_DAYS`) — the dumps directory is a hand-off window, not
    history; history is the repositories.
 5. Runs **before** the sidecar's schedule with room to finish; the datadir is never in the set.
+   Its `/tmp` is a sized tmpfs like every other service's (ADR-0003).
 
 MariaDB and SQLite implementations arrive with the first packages that need them (seafile;
 jellyfin/audiobookshelf); they meet the same five points.

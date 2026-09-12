@@ -61,6 +61,7 @@ app"). In Uptime Kuma, add a **push** monitor (heartbeat 24 h + grace), and put 
 
 ```bash
 docker compose up -d                              # both files — COMPOSE_FILE in .env
+docker compose logs -f dump                       # dumps at boot; wait for `dump: wrote portfolio-…`
 docker compose run --rm --name backup-run backup run   # first backup by hand; the monitor should go up
 ```
 
@@ -170,9 +171,11 @@ convention, and a bare `compose run` would reuse it and collide with the running
   every uploaded statement in plaintext; the script writes them 0640 (`umask 027`) but never
   touches the directory's own mode, so `chmod 0750 volumes/dumps` after creating it is on you.
   One Uptime Kuma push per run (`status=up`, or `down` naming the failed targets); there is no
-  other monitoring. `.env` is a single-file bind, like the allowlist: after editing it,
-  `docker compose up -d --force-recreate backup`. **Not yet run on a VM** — the sidecar joins
-  `hardening_verified: false`.
+  other monitoring. `.env` and the four `secrets/backup-*` files are single-file binds, like the
+  allowlist: after editing or rotating any of them, `docker compose up -d --force-recreate backup`.
+  The sidecar refuses to run while `volumes/dumps` is empty — a first run before the boot dump
+  has finished fails instead of blessing an empty snapshot. **Not yet run on a VM** — the sidecar
+  joins `hardening_verified: false`.
 
 - **Not vendored:** upstream's `compose.dev.yaml`, `compose.test.yaml`, `compose.external-db.yaml`
   and `scripts/smoke-test.sh`. The smoke test cannot run against this package under any

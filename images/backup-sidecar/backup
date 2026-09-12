@@ -26,7 +26,15 @@ validate() {
   done
   [ -d /backup ] && [ -n "$(ls -A /backup 2>/dev/null)" ] || die "nothing is mounted under /backup — the backup set is the set of :ro binds there"
   [ -d /cache ] && [ -w /cache ] || die "/cache is missing or not writable as $(id -u):$(id -g) — bind ./volumes/backup-cache there"
-  [ -w /resticprofile ] || die "/resticprofile is not writable — mount a tmpfs there"
+}
+
+# An empty source is a dump that has not run yet or a bind to nowhere, never something worth a
+# snapshot that would ping `up`.
+validate_sources() {
+  for d in /backup/*/; do
+    [ -d "$d" ] || continue
+    [ -n "$(ls -A "$d" 2>/dev/null)" ] || die "$d is empty — nothing to back up there yet; refusing to snapshot it"
+  done
 }
 
 # One push per run. Kuma's push URL is .../api/push/<token>?status=up&msg=OK&ping= — the query is
@@ -62,6 +70,7 @@ case "${1:-schedule}" in
   schedule)
     validate
     [ -n "${BACKUP_SCHEDULE:-}" ] || die "BACKUP_SCHEDULE is required — a five-field cron expression, UTC"
+    [ -w /resticprofile ] || die "/resticprofile is not writable — mount a tmpfs there"
     # supercronic validates the expression at start; an invalid one exits here, and the restart
     # policy makes that visible in `docker compose ps`.
     printf '%s /usr/local/bin/backup run\n' "$BACKUP_SCHEDULE" > "$CRONTAB"
@@ -70,6 +79,7 @@ case "${1:-schedule}" in
     ;;
   run)
     validate
+    validate_sources
     run_once
     ;;
   *)

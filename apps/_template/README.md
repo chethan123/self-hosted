@@ -24,6 +24,7 @@ done
 chmod 0400 secrets/restic-password secrets/backup-*.env
 
 docker compose up -d                     # both files — COMPOSE_FILE in .env
+docker compose logs -f dump              # until it reports the archive it wrote (it dumps at boot)
 docker compose run --rm --name backup-run backup run   # first backup by hand; check the Kuma monitor went up
 ```
 
@@ -32,6 +33,7 @@ docker compose run --rm --name backup-run backup run   # first backup by hand; c
 - Hardening deviations: <anything flipped off read_only, extra caps, and why>
 - Backups: what `docker-compose.backup.yml` binds under `/backup` (and `app.meta.yaml`'s
   `backup:` block lists) — and nothing else. <what is NOT kept and why: caches, NFS media, …>.
-  Restore: `docker compose run --rm --name backup-restore -v ./restore:/restore backup -n nfs restore latest --target /restore`
-  (spec §6; `--name` because `container_name` is fixed); re-`chown` before moving into `volumes/`.
-  After editing `.env`: `docker compose up -d --force-recreate backup` (single-file bind).
+  Restore: `mkdir restore && docker compose run --rm --name backup-restore -v ./restore:/restore backup -n nfs restore latest --target /restore`
+  (spec §6; `mkdir` first or Compose creates it root-owned; `--name` because `container_name` is
+  fixed); re-`chown` before moving into `volumes/`. After editing `.env` or rotating any
+  `secrets/backup-*` file: `docker compose up -d --force-recreate backup` (single-file binds).

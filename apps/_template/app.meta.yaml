@@ -30,12 +30,12 @@ services:
     image_type: self-built   # ghcr.io/chethan123/backup-sidecar — images/backup-sidecar/, user ${BACKUP_UID}:${BACKUP_GID}
     read_only: true
     caps_added: []
-    tmpfs_paths: [/tmp, /resticprofile]
+    tmpfs_paths: [/tmp, /resticprofile]   # 64m; 1m — the crontab
   dump:
     image_type: vanilla      # postgres, SAME tag as db — user ${BACKUP_UID}:${BACKUP_GID}
     read_only: true
     caps_added: []
-    tmpfs_paths: [/tmp]
+    tmpfs_paths: [/tmp]      # 16m — pg_dump stderr only
 
 # Backup contract (ADR-0006, docs/specs/backup-sidecar.md). Mirrors docker-compose.backup.yml —
 # the audit trail for what is kept, as whom, and when.

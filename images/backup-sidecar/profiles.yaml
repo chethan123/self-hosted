@@ -15,12 +15,13 @@ base:
   cache-dir: /cache
   # First run creates the repository — append-only permits `init` (restic-server spec §6).
   initialize: true
-  # resticprofile's own lock, on the runtime tmpfs; `force-inactive-lock` clears one left by a
-  # container killed mid-run.
-  lock: /resticprofile/lock
-  force-inactive-lock: true
+  # No resticprofile `lock:`: it lives in one container's tmpfs and its staleness check is a PID
+  # lookup, so it neither serializes a `compose run` against the scheduled container nor survives
+  # one. Sequencing is the runner's; the repository lock is restic's.
   backup:
     source: [/backup]
+    # A dump service's staging file (dump contract, spec §8) — never a finished archive.
+    exclude: ["*.part"]
     # Stable snapshot identity — the container's hostname is not.
     host: "{{ .Env.BACKUP_SLUG }}"
     tag: ["{{ .Env.BACKUP_SLUG }}"]

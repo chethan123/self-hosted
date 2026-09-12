@@ -21,6 +21,8 @@ services:
       - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 3 * * *}
       - BACKUP_PING_URL=${BACKUP_PING_URL:?set BACKUP_PING_URL to the Uptime Kuma push URL, or none}
       - TZ=UTC
+    # Single-file binds, like .env below: after rotating any of them,
+    # `docker compose up -d --force-recreate backup` — the running sidecar keeps the old inode.
     secrets: [restic-password, backup-nfs.env, backup-rsync-net.env, backup-pcloud.env]
     volumes:
       # The backup set IS these binds (spec D5): the sidecar backs up /backup and sees nothing else.
@@ -76,7 +78,7 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     read_only: true
-    tmpfs: ["/tmp"]                          # pg_dump stderr only; the archive goes straight to /dumps
+    tmpfs: ["/tmp:size=16m"]                 # pg_dump stderr only; the archive goes straight to /dumps
     mem_limit: 256m
     cpus: "0.5"
     pids_limit: 64

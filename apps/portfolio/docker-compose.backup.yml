@@ -27,6 +27,8 @@ services:
       - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 3 * * *}
       - BACKUP_PING_URL=${BACKUP_PING_URL:?set BACKUP_PING_URL to this app's Uptime Kuma push URL, or none}
       - TZ=UTC
+    # Single-file binds, like .env below: after rotating any of them,
+    # `docker compose up -d --force-recreate backup` — the running sidecar keeps the old inode.
     secrets: [restic-password, backup-nfs.env, backup-rsync-net.env, backup-pcloud.env]
     volumes:
       # The backup set (spec D5). volumes/db/data is deliberately absent: uid 70, 0700, and covered

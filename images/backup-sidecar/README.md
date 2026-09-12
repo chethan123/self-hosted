@@ -22,9 +22,9 @@ Runtime inputs, all set by the app's `docker-compose.backup.yml`:
 | `BACKUP_PING_URL` | env | Uptime Kuma push URL (query stripped and rebuilt), or `none` |
 | `/run/secrets/restic-password` | file-secret | the repository password — one per app, **escrowed out of band** |
 | `/run/secrets/backup-<target>.env` | file-secret | dotenv: `RESTIC_REST_USERNAME=<slug>` + `RESTIC_REST_PASSWORD=…`, one per target |
-| `/backup/<name>` | `:ro` binds | the backup set — the sidecar backs up `/backup` and sees nothing else |
+| `/backup/<name>` | `:ro` binds | the backup set — the sidecar backs up `/backup` and sees nothing else; an empty `<name>/` fails the run; `*.part` is excluded |
 | `/cache` | `rw` bind | restic's cache (`./volumes/backup-cache`), owned by the sidecar's UID |
-| `/resticprofile` | tmpfs | crontab + resticprofile's lock; also masks the base image's `VOLUME` |
+| `/resticprofile` | tmpfs | the crontab; also masks the base image's `VOLUME` |
 | `user:` | compose | the account owning every path under `/backup` — never root |
 
 Targets are the image's `BACKUP_TARGETS` (`nfs rsync-net pcloud`), matching the profiles in

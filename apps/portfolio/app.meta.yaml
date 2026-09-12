@@ -181,7 +181,7 @@ services:
                             # user ${DUMP_UID}:${DUMP_GID}. Not yet run anywhere (ADR-0004).
     read_only: true
     caps_added: []
-    tmpfs_paths: [/tmp, /resticprofile]
+    tmpfs_paths: [/tmp, /resticprofile]   # 64m; 1m — the crontab
 
 # Backup contract (ADR-0006, docs/specs/backup-sidecar.md). Mirrors docker-compose.backup.yml.
 # The reference implementation of the standard — the first package to carry this block.
