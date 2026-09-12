@@ -29,8 +29,8 @@ silently while the rest of the stack goes green.
 # on the app VM (sparse-checkout this app dir)
 docker version --format '{{.Server.Version}}'   # must be 28.0+ — the SERVER, not `docker --version`
 
-mkdir -p volumes/db/data volumes/dumps          # both binds refuse to create themselves; `up`
-                                                # fails naming them
+mkdir -p volumes/db/data volumes/dumps volumes/backup-cache   # binds refuse to create themselves;
+chmod 0750 volumes/dumps                                       # `up` fails naming them
 id -u; id -g                                    # note both numbers — you type them in below
 
 cp allowed-emails.example.txt secrets/allowed-emails.txt   # who may sign in, one address a line
@@ -38,12 +38,30 @@ cp .env.example .env
 ```
 
 Then edit `.env` and set: `BASE_DOMAIN`, `POSTGRES_PASSWORD`, `GATE_CLIENT_ID`,
-`GATE_CLIENT_SECRET`, `GATE_COOKIE_SECRET`, and `DUMP_UID`/`DUMP_GID` — as the **literal numbers**
-`id` printed. A `.env` is not a shell: `DUMP_UID=$(id -u)` is stored verbatim and the container
-fails to create. Then:
+`GATE_CLIENT_SECRET`, `GATE_COOKIE_SECRET`, `BACKUP_PING_URL` (below), and `DUMP_UID`/`DUMP_GID`
+— as the **literal numbers** `id` printed. A `.env` is not a shell: `DUMP_UID=$(id -u)` is
+stored verbatim and the container fails to create.
+
+Backups (`docker-compose.backup.yml`; `docs/specs/backup-sidecar.md` §6) need four file-secrets,
+three htpasswd lines on restic-server, and an Uptime Kuma monitor:
 
 ```bash
-docker compose up -d
+openssl rand -hex 32 > secrets/restic-password    # the repository password. ESCROW IT (password
+                                                  # manager): it cannot rescue itself from a backup
+for t in nfs rsync-net pcloud; do                 # one REST login per target, username = slug
+  printf 'RESTIC_REST_USERNAME=portfolio\nRESTIC_REST_PASSWORD=%s\n' "$(openssl rand -hex 24)" > secrets/backup-$t.env
+done
+chmod 0400 secrets/restic-password secrets/backup-*.env
+```
+
+On restic-server, append a `portfolio` bcrypt line — the password from each `backup-<target>.env`
+— to that target's htpasswd file and restart the three backends (its README, "Onboarding a new
+app"). In Uptime Kuma, add a **push** monitor (heartbeat 24 h + grace), and put its push URL in
+`.env` as `BACKUP_PING_URL`. Then:
+
+```bash
+docker compose up -d                              # both files — COMPOSE_FILE in .env
+docker compose run --rm backup run                # first backup by hand; the monitor should go up
 ```
 
 Finally, on each Global Caddy VM once the route is pulled:
@@ -61,6 +79,17 @@ docker compose up -d     # pull_policy:always re-pulls the floating major tag
 `APP_VERSION` unset floats with every `v2.x.y`. Pin it in `.env` to hold still or roll back. The
 tag never crosses a major — going to v3 means setting `APP_VERSION=3` deliberately, after reading
 upstream's release notes.
+
+## Restoring
+
+```bash
+docker compose run --rm backup -n nfs snapshots                  # or -n rsync-net, -n pcloud
+mkdir restore && docker compose run --rm -v ./restore:/restore backup -n nfs restore latest --target /restore
+```
+
+`restore/dumps/` then holds the archives, owned by `DUMP_UID`; `dump verify` (below) checks one,
+and upstream's `docs/operating.md` says how to load it. `restore/secrets/` and `restore/env/.env`
+are this stack's credentials — treat the directory accordingly and delete it when done.
 
 ## Verifying a dump
 
@@ -125,11 +154,19 @@ convention, and a bare `compose run` would reuse it and collide with the running
   habit can't commit it. Restart `gate` after editing: a single-file bind mount stops following
   a file replaced by rename.
 
-- **Backups:** `volumes/db/data` is the database; `volumes/dumps` holds the nightly `pg_dump`
-  (`DUMP_KEEP_DAYS=7` by default). The dumps are a hand-off window for whatever collects them,
-  not your history — snapshot them off the VM. They are every balance and every uploaded
-  statement in plaintext; the script writes them 0640 (`umask 027`) but never touches the
-  directory's own mode, so `chmod 0750 volumes/dumps` after creating it is on you.
+- **Backups** — the reference implementation of ADR-0006 (`docs/specs/backup-sidecar.md`).
+  `docker-compose.backup.yml` adds the `backup` sidecar, running as the dump account on its own
+  `backup-egress` network, pushing at 03:00 UTC to all three restic-server targets. The backup set
+  is exactly what it binds under `/backup`: `volumes/dumps` (the database, as the 02:00 verified
+  `pg_dump` archives — `DUMP_KEEP_DAYS=7` is a hand-off window; history is the repositories),
+  `secrets/` and `.env` (every credential of this stack, encrypted at rest — spec D9: the
+  repository password must therefore live somewhere else too, and a rotated secret stays in old
+  snapshots for the retention window). Not in the set, on purpose: `volumes/db/data` (uid 70,
+  0700, never read live), `volumes/caddy`, `volumes/backup-cache`. The dumps are every balance and
+  every uploaded statement in plaintext; the script writes them 0640 (`umask 027`) but never
+  touches the directory's own mode, so `chmod 0750 volumes/dumps` after creating it is on you.
+  One Uptime Kuma push per run (`status=up`, or `down` naming the failed targets); there is no
+  other monitoring. **Not yet run on a VM** — the sidecar joins `hardening_verified: false`.
 
 - **Not vendored:** upstream's `compose.dev.yaml`, `compose.test.yaml`, `compose.external-db.yaml`
   and `scripts/smoke-test.sh`. The smoke test cannot run against this package under any

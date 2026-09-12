@@ -1,0 +1,46 @@
+# House backup profile — baked into the image; identical on every VM (ADR-0006, spec §8).
+# One profile per restic-server target; `base` carries everything they share. App identity is
+# templated from the environment the compose override sets (BACKUP_SLUG, BASE_DOMAIN); the
+# credentials are file-secrets: the REST login per target as a dotenv file, the repository
+# password as a plain file. `backup` (the entrypoint) refuses to start with any of them missing.
+version: "1"
+
+global:
+  # The lock restic-server leaves after a client dies mid-run is only ever ours (private repos).
+  restic-lock-retry-after: 1m
+  restic-stale-lock-age: 2h
+
+base:
+  password-file: /run/secrets/restic-password
+  cache-dir: /cache
+  # First run creates the repository — append-only permits `init` (restic-server spec §6).
+  initialize: true
+  # resticprofile's own lock, on the runtime tmpfs; `force-inactive-lock` clears one left by a
+  # container killed mid-run.
+  lock: /resticprofile/lock
+  force-inactive-lock: true
+  backup:
+    source: [/backup]
+    # Stable snapshot identity — the container's hostname is not.
+    host: "{{ .Env.BACKUP_SLUG }}"
+    tag: ["{{ .Env.BACKUP_SLUG }}"]
+    exclude-caches: true
+    # Deliberately absent:
+    #   one-file-system — every /backup/<name> is its own bind mount and would be skipped
+    #   no-error-on-warning — an unreadable file (restic exit 3) must fail the run and ping down
+    #   retention/forget/check — 403 on the append-only server; the maintenance VM's job
+
+nfs:
+  inherit: base
+  repository: "rest:https://backup.{{ .Env.BASE_DOMAIN }}/nfs/{{ .Env.BACKUP_SLUG }}/"
+  env-file: [/run/secrets/backup-nfs.env]
+
+rsync-net:
+  inherit: base
+  repository: "rest:https://backup.{{ .Env.BASE_DOMAIN }}/rsync-net/{{ .Env.BACKUP_SLUG }}/"
+  env-file: [/run/secrets/backup-rsync-net.env]
+
+pcloud:
+  inherit: base
+  repository: "rest:https://backup.{{ .Env.BASE_DOMAIN }}/pcloud/{{ .Env.BACKUP_SLUG }}/"
+  env-file: [/run/secrets/backup-pcloud.env]

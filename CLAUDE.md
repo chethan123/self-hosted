@@ -21,7 +21,9 @@ each deployed to its own Proxmox VM. **Private** GitHub repo. Read `CONTEXT.md` 
 ```
 apps/<name>/         one app package (see apps/_template/ for the canonical shape)
 global-caddy/        the shared public reverse proxy; sparse-checked-out to each Caddy VM
-docs/adr/            architecture decision records (0001-0005)
+images/backup-sidecar/  the one backup image every app runs; released by .github/workflows/
+docs/adr/            architecture decision records (0001-0006)
+docs/specs/          full designs (restic-server, backup-sidecar)
 CONTEXT.md           domain glossary
 .claude/skills/      onboard-app, harden-container
 ```
@@ -73,7 +75,26 @@ misses a variable.
 
 ## Data
 
-Co-located `volumes/<service>/` bind mounts, gitignored. `volumes/` holds all app state — back it up.
+Co-located `volumes/<service>/` bind mounts, gitignored. `volumes/` holds all app state.
+
+## Backups (ADR-0006)
+
+Every package carries **`docker-compose.backup.yml`** — merged by
+`COMPOSE_FILE=docker-compose.yml:docker-compose.backup.yml` in `.env`, never by editing the app's
+compose — with a `backup` sidecar (`ghcr.io/chethan123/backup-sidecar`, `images/backup-sidecar/`)
+that pushes `/backup` to every restic-server target on a per-app schedule. Rules:
+
+- **The backup set is exactly the `:ro` binds under `/backup/<name>`** — per app, no house default;
+  the same list goes in `app.meta.yaml`'s `backup:` block. `create_host_path: false` on each.
+- **Non-root, as the one account that owns the set.** Never root, never `DAC_READ_SEARCH` (a
+  non-root `cap_add` grants nothing — Docker sets no ambient caps). An unreadable file fails the run.
+- **A database is never read live**: every one gets a dump service in its engine's image, writing
+  into `volumes/dumps`; the datadir is never mounted. Postgres: `apps/_template/scripts/dump-loop.sh`.
+- Four file-secrets — `restic-password` (one per app, **escrowed out of band**) and
+  `backup-{nfs,rsync-net,pcloud}.env` — and one Uptime Kuma push per run (`BACKUP_PING_URL`).
+- `secrets/` and `.env` may be in the set (the repository is encrypted); rotation ≠ purge.
+
+Mechanics, restore, and the dump contract: `docs/specs/backup-sidecar.md`.
 
 ## NFS volumes (optional)
 
@@ -94,8 +115,9 @@ Do not hand-scaffold — the skills enforce the invariants above.
 
 ## app.meta.yaml
 
-The machine-readable per-app contract (routing + hardening decisions). Keep it in sync with the
-compose file; it is the audit trail for every deviation from the defaults. See `apps/_template/app.meta.yaml`.
+The machine-readable per-app contract (routing + hardening + backup decisions). Keep it in sync
+with both compose files; it is the audit trail for every deviation from the defaults. See
+`apps/_template/app.meta.yaml`.
 
 ## Comments
 

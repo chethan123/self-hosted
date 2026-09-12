@@ -1,0 +1,78 @@
+#!/bin/sh
+# The sidecar's whole program (docs/specs/backup-sidecar.md §8). POSIX sh — busybox ash.
+#   backup [schedule]      the service's command: one crontab line from BACKUP_SCHEDULE, then supercronic
+#   backup run             one run now: every target in order, then one Uptime Kuma push
+#   backup <resticprofile args…>   anything else goes to resticprofile against the baked profile,
+#                          e.g. `-n nfs snapshots`, `-n nfs restore latest --target /restore`
+set -eu
+
+CONFIG=/etc/resticprofile/profiles.yaml
+CRONTAB=/resticprofile/crontab
+BACKUP_PING_URL="${BACKUP_PING_URL:-}"
+
+log() { printf 'backup: %s\n' "$*"; }
+die() { printf 'backup: %s\n' "$*" >&2; exit 1; }
+
+# Fails closed and names what is missing, before any target is touched.
+validate() {
+  [ "$(id -u)" != "0" ] || die "refusing to run as root; set user: to the account that owns every /backup/* path"
+  [ -n "${BACKUP_SLUG:-}" ] || die "BACKUP_SLUG is required (the app slug: repository path and REST username)"
+  [ -n "${BASE_DOMAIN:-}" ] || die "BASE_DOMAIN is required (the repository host is backup.\$BASE_DOMAIN)"
+  # `none` is the explicit opt-out; blank is the operator forgetting the only monitoring there is.
+  [ -n "$BACKUP_PING_URL" ] || die "BACKUP_PING_URL is required — the Uptime Kuma push URL, or none to run unmonitored"
+  [ -r /run/secrets/restic-password ] || die "/run/secrets/restic-password is missing or unreadable as $(id -u):$(id -g)"
+  for t in $BACKUP_TARGETS; do
+    [ -r "/run/secrets/backup-$t.env" ] || die "/run/secrets/backup-$t.env is missing or unreadable as $(id -u):$(id -g)"
+  done
+  [ -d /backup ] && [ -n "$(ls -A /backup 2>/dev/null)" ] || die "nothing is mounted under /backup — the backup set is the set of :ro binds there"
+  [ -d /cache ] && [ -w /cache ] || die "/cache is missing or not writable as $(id -u):$(id -g) — bind ./volumes/backup-cache there"
+  [ -w /resticprofile ] || die "/resticprofile is not writable — mount a tmpfs there"
+}
+
+# One push per run. Kuma's push URL is .../api/push/<token>?status=up&msg=OK&ping= — the query is
+# stripped so a pasted-verbatim URL cannot send `status` twice, then rebuilt from the run's result.
+push() {
+  [ "$BACKUP_PING_URL" != "none" ] || return 0
+  curl -fsS -o /dev/null --max-time 30 --retry 3 --retry-all-errors -G "${BACKUP_PING_URL%%\?*}" \
+    --data-urlencode "status=$1" --data-urlencode "msg=$2" --data-urlencode "ping=$3" ||
+    log "monitoring push failed (status=$1)"
+}
+
+# Each target on its own, not a resticprofile group: the failure message must name the target,
+# and a cloud target failing must not stop the LAN copy that runs before it (or vice versa).
+run_once() {
+  started=$(date +%s)
+  failed=""
+  for t in $BACKUP_TARGETS; do
+    log "target $t"
+    resticprofile -c "$CONFIG" --no-ansi -n "$t" backup || failed="$failed $t"
+  done
+  elapsed=$(( $(date +%s) - started ))
+  if [ -z "$failed" ]; then
+    log "all targets done in ${elapsed}s"
+    push up "ok ${elapsed}s" "$(( elapsed * 1000 ))"
+  else
+    log "failed:${failed} (${elapsed}s)"
+    push down "failed:${failed# }" "$(( elapsed * 1000 ))"
+    return 1
+  fi
+}
+
+case "${1:-schedule}" in
+  schedule)
+    validate
+    [ -n "${BACKUP_SCHEDULE:-}" ] || die "BACKUP_SCHEDULE is required — a five-field cron expression, UTC"
+    # supercronic validates the expression at start; an invalid one exits here, and the restart
+    # policy makes that visible in `docker compose ps`.
+    printf '%s /usr/local/bin/backup run\n' "$BACKUP_SCHEDULE" > "$CRONTAB"
+    log "scheduled '${BACKUP_SCHEDULE}' (${TZ:-UTC}) for ${BACKUP_SLUG} → ${BACKUP_TARGETS}"
+    exec supercronic -passthrough-logs "$CRONTAB"
+    ;;
+  run)
+    validate
+    run_once
+    ;;
+  *)
+    exec resticprofile -c "$CONFIG" "$@"
+    ;;
+esac

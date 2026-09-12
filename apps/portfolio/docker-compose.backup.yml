@@ -1,0 +1,64 @@
+# The backup half of this package (ADR-0006, docs/specs/backup-sidecar.md) — merged by
+# COMPOSE_FILE in .env; docker-compose.yml stays upstream's. The reference implementation of the
+# standard: dumps + secrets + .env, pushed to every restic-server target after the nightly dump.
+#
+# `dump` is not here — it is upstream's, in docker-compose.yml, and already meets the dump
+# contract (spec §8): pg_dump in the server's own image, verified, atomic, 0640, retention.
+services:
+
+  backup:
+    image: ghcr.io/chethan123/backup-sidecar:1.0.0
+    container_name: backup
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    # Its own bridge — the eighth network, recorded in app.meta.yaml. Not `egress-gate` or
+    # `egress-proxy`: those are one-container networks by upstream's design (spec 0018), and the
+    # sidecar has no business on the same segment as either.
+    networks: [backup-egress]
+    # The dump account: it owns ./volumes/dumps (0750/0640), ./secrets and .env — the whole set.
+    user: "${DUMP_UID:?set DUMP_UID to the account owning ./volumes/dumps — `id -u`}:${DUMP_GID:?set DUMP_GID to that account's group — `id -g`}"
+    depends_on: [dump]
+    environment:
+      - BACKUP_SLUG=portfolio
+      - BASE_DOMAIN=${BASE_DOMAIN:?}
+      # 03:00 UTC: DUMP_AT is 02 and a dump takes minutes. Keep it after DUMP_AT if you move either.
+      - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 3 * * *}
+      - BACKUP_PING_URL=${BACKUP_PING_URL:?set BACKUP_PING_URL to this app's Uptime Kuma push URL, or none}
+      - TZ=UTC
+    secrets: [restic-password, backup-nfs.env, backup-rsync-net.env, backup-pcloud.env]
+    volumes:
+      # The backup set (spec D5). volumes/db/data is deliberately absent: uid 70, 0700, and covered
+      # by the dumps. volumes/caddy holds nothing irreplaceable (plain :80, no certificates).
+      - {type: bind, source: ./volumes/dumps, target: /backup/dumps,    read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: ./secrets,       target: /backup/secrets,  read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: ./.env,          target: /backup/env/.env, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: ./volumes/backup-cache, target: /cache, bind: {create_host_path: false}}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      - /resticprofile:size=1m   # crontab + lock; masks the base image's VOLUME there
+    # ADR-0003 limits — starting values (limits_verified: false). The set is a few dumps; restic
+    # will not need the headroom for years.
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 64
+
+networks:
+  backup-egress:
+    enable_ipv6: false
+
+secrets:
+  restic-password:
+    file: ./secrets/restic-password
+  backup-nfs.env:
+    file: ./secrets/backup-nfs.env
+  backup-rsync-net.env:
+    file: ./secrets/backup-rsync-net.env
+  backup-pcloud.env:
+    file: ./secrets/backup-pcloud.env

@@ -31,6 +31,11 @@ are the user's. Do not run anything until the package is scaffolded and confirme
    - services and their images; for each: `image_type` (vanilla | self-built | linuxserver)
    - `needs_egress` (default false), `secrets_mode` (default hybrid), whether there is a database
    - any NFS volumes: server IP, export path, container mount path, `access` (ro default | rw)
+   - **backup** (ADR-0006): the backup set — which `./volumes/<x>`, `./secrets`, `./.env` are
+     kept; the one account that can read all of it (the dump account when there is a database);
+     the schedule (cron, UTC, after the dump); every database → a dump service (Postgres ships in
+     the template; MariaDB/SQLite need a script written to the contract in
+     `docs/specs/backup-sidecar.md` §8)
 2. **Scaffold** `apps/<name>/` by copying `apps/_template/` and filling it in:
    - **Names.** Rename the template's `example-app` service to the app slug — never leave it `app`;
      it is the DNS name the sidecar's `reverse_proxy` targets. Give every service an explicit
@@ -41,6 +46,15 @@ are the user's. Do not run anything until the package is scaffolded and confirme
    - Remove the `db` service (and its network/secret) if the app has none.
    - Add the app service to the `edge` network **only if** `needs_egress: true`.
    - Write `.env.example` exhaustively; put high-value secrets as `./secrets/*.txt` file-secrets.
+     Keep `COMPOSE_FILE=docker-compose.yml:docker-compose.backup.yml` on top.
+   - **`docker-compose.backup.yml`**: set `BACKUP_SLUG` to the slug, `user:` to the set's owner,
+     the `:ro` binds under `/backup/<name>` to the backup set (long syntax, `create_host_path:
+     false`), `networks:` to the package's egress network, `BACKUP_SCHEDULE`'s default. Keep the
+     `dump` service for a Postgres `db` (same image tag as `db`); delete it with `db`; write one
+     for any other engine. Never mount a datadir under `/backup`. Never edit the app's own compose
+     file for backups.
+   - Fill `app.meta.yaml`'s `backup:` block — `sources` must equal the binds, `dumps` every
+     database — and the `backup`/`dump` entries under `services:`.
    - Write `README.md` from the template.
 3. **Write the global route** as a host-matcher **fragment** (NOT a standalone site block) at
    `global-caddy/sites/<name>.caddy`. It is imported *inside* the shared `*.{$BASE_DOMAIN}` block so
@@ -60,7 +74,11 @@ are the user's. Do not run anything until the package is scaffolded and confirme
    record `caps_added` / `tmpfs_paths` back into `app.meta.yaml`.
 5. **Close out** — remind the user to: create real `.env` + `secrets/*.txt` on the VM (never commit
    them), run `git` from a trusted host (gitleaks pre-commit is active), and `caddy reload` on each
-   Global Caddy VM after the route is pulled.
+   Global Caddy VM after the route is pulled. For backups (spec §6): the four file-secrets
+   (`restic-password` — escrow it — and `backup-{nfs,rsync-net,pcloud}.env`), `mkdir` +
+   `chown` for `volumes/backup-cache` and `volumes/dumps`, the slug's three bcrypt lines on
+   restic-server, an Uptime Kuma push monitor for `BACKUP_PING_URL`, then
+   `docker compose run --rm backup run` and one restore.
 
 ## Mode: migrate
 
@@ -80,6 +98,10 @@ are the user's. Do not run anything until the package is scaffolded and confirme
      original clearly wrote to them (then `:rw`) — confirm each `access` with the user.
    - Generate the sidecar `Caddyfile` and the `global-caddy/sites/<name>.caddy` route **fragment**
      (host-matcher form, per `new` step 3 — never a standalone block).
+   - Add `docker-compose.backup.yml` from the template as in `new` step 2 — the imported compose
+     file is not edited for it; `COMPOSE_FILE` in `.env.example` merges it. If the stack already
+     dumps its database (portfolio did), keep that service where it is if it meets the dump
+     contract, and point the backup set at its output.
 3. **Emit a change report** — a clear list of: what was moved/renamed, what still needs a human
    decision (which caps, which services need egress, which secrets to promote to file-secrets),
    and anything in the original that looked unsafe (published ports, docker socket, `privileged`).
@@ -94,3 +116,7 @@ are the user's. Do not run anything until the package is scaffolded and confirme
 - `read_only: true` unless the app's README documents why it was disabled.
 - Every `nfs_volumes` entry has a matching top-level `volumes:` definition and a container mount
   whose `:ro`/`:rw` suffix matches its `access` (default `:ro`). NFS options stay `soft`.
+- Every package has `docker-compose.backup.yml` and `COMPOSE_FILE=…` in `.env.example`; the
+  `backup` service is never root and never carries `cap_add`; every `/backup/*` bind is `:ro`
+  with `create_host_path: false`; no database datadir is under `/backup`; every database has a
+  dump service; `app.meta.yaml backup.sources` equals the binds.

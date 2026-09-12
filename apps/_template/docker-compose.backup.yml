@@ -1,0 +1,96 @@
+# The backup half of every package (ADR-0006, docs/specs/backup-sidecar.md). Merged into the app's
+# project by COMPOSE_FILE in .env, so docker-compose.yml — vendored or not — is never edited for
+# backups. `/onboard-app` rewrites `example-app` to the slug and the binds to the real backup set.
+services:
+
+  # --- Backup sidecar: pushes /backup to every restic-server target on BACKUP_SCHEDULE ---
+  backup:
+    image: ghcr.io/chethan123/backup-sidecar:1.0.0
+    container_name: backup
+    restart: unless-stopped
+    # Egress to backup.${BASE_DOMAIN} via Global Caddy, and nothing else — not on frontend/backend.
+    networks: [edge]
+    # The one account that can read EVERY path under /backup (spec §8, Identity) — never root.
+    # With a dump service it is the dump account; both run as it.
+    user: "${BACKUP_UID:?set BACKUP_UID to the account owning the backup set — `id -u`}:${BACKUP_GID:?set BACKUP_GID to that account's group — `id -g`}"
+    depends_on: [dump]                       # ordering on `up` only; the schedules do the real ordering
+    environment:
+      - BACKUP_SLUG=example-app              # repository path + REST username (restic-server D6/D7)
+      - BASE_DOMAIN=${BASE_DOMAIN:?set BASE_DOMAIN — repositories live at backup.<it>}
+      # Cron, UTC. This app's choice (spec D12) — after the dump has finished. Mirror in app.meta.yaml.
+      - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 3 * * *}
+      - BACKUP_PING_URL=${BACKUP_PING_URL:?set BACKUP_PING_URL to the Uptime Kuma push URL, or none}
+      - TZ=UTC
+    secrets: [restic-password, backup-nfs.env, backup-rsync-net.env, backup-pcloud.env]
+    volumes:
+      # The backup set IS these binds (spec D5): the sidecar backs up /backup and sees nothing else.
+      # create_host_path: false — a missing source stops `up` naming it, not backs up an empty dir.
+      - {type: bind, source: ./volumes/app,   target: /backup/app,      read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: ./volumes/dumps, target: /backup/dumps,    read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: ./secrets,       target: /backup/secrets,  read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: ./.env,          target: /backup/env/.env, read_only: true, bind: {create_host_path: false}}
+      # restic's cache — persists across restarts, owned by BACKUP_UID, never part of the set.
+      - {type: bind, source: ./volumes/backup-cache, target: /cache, bind: {create_host_path: false}}
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    # /resticprofile: the crontab + resticprofile's lock, and it masks the base image's VOLUME there.
+    tmpfs: ["/tmp:size=64m", "/resticprofile:size=1m"]
+    mem_limit: 512m                          # starting value — restic's memory grows with the repository
+    cpus: "1.0"
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # --- Dump service: the database is never read live (spec D6). Postgres — delete together with
+  # `db` and `backup`'s depends_on; another engine needs its own script to the same contract. ---
+  dump:
+    image: postgres:16.4                     # MUST equal db's tag — pg_dump refuses a newer server
+    container_name: dump
+    # Not `unless-stopped`: DUMP_ENABLED=false exits 0 and must stay exited.
+    restart: on-failure
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [backend]
+    user: "${BACKUP_UID:?}:${BACKUP_GID:?}"  # the backup set's owner, so the sidecar can read the dumps
+    environment:
+      DATABASE_URL: postgres://postgres@db:5432/postgres   # db's defaults; password via PGPASSWORD (entrypoint), never in the URL
+      DUMP_PREFIX: example-app
+      DUMP_ENABLED: ${DUMP_ENABLED-true}
+      DUMP_AT: ${DUMP_AT-02}                 # UTC hour; BACKUP_SCHEDULE must fall after it
+      DUMP_KEEP_DAYS: ${DUMP_KEEP_DAYS-7}
+      DUMP_COMPRESS: ${DUMP_COMPRESS-0}
+      TZ: UTC
+    secrets: [db_password]
+    # libpq has no *_FILE convention: the file-secret becomes PGPASSWORD here, in-process, never
+    # in compose's environment. `command:` is appended, so `compose run dump verify <file>` works.
+    entrypoint: ["sh", "-c", "PGPASSWORD=$(cat /run/secrets/db_password) exec sh /usr/local/bin/dump-loop.sh \"$@\"", "dump-loop"]
+    command: ["loop"]
+    volumes:
+      - {type: bind, source: ./scripts/dump-loop.sh, target: /usr/local/bin/dump-loop.sh, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: ./volumes/dumps, target: /dumps, bind: {create_host_path: false}}
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp"]                          # pg_dump stderr only; the archive goes straight to /dumps
+    mem_limit: 256m
+    cpus: "0.5"
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "sh", "/usr/local/bin/dump-loop.sh", "healthcheck"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 15m
+
+secrets:
+  restic-password:
+    file: ./secrets/restic-password
+  backup-nfs.env:
+    file: ./secrets/backup-nfs.env
+  backup-rsync-net.env:
+    file: ./secrets/backup-rsync-net.env
+  backup-pcloud.env:
+    file: ./secrets/backup-pcloud.env
