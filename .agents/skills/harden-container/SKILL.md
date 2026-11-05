@@ -34,19 +34,21 @@ Repeat until the app runs cleanly with the smallest privilege set:
      or check what it wants with `getpcaps 1` / `capsh --decode`. Add back **one** capability, re-test.
    - Permission-denied on bind mounts with a linuxserver.io image -> it needs PUID/PGID and the
      ownership caps `CHOWN SETUID SETGID DAC_OVERRIDE FOWNER` (this combo is the #1 self-inflicted
-     breakage — see the research in ADR-0003).
+     breakage; ADR-0003 explains why linuxserver.io images need root at init).
 3. **Re-test** after each single change. Stop as soon as it's healthy.
-4. **If it simply cannot run read-only** after reasonable effort, set `read_only: false`, and write
-   *why* into the app's `README.md`. This is the documented escape hatch, not a default.
+4. **If it simply cannot run read-only** after reasonable effort, set `read_only: false`, and record
+   *why* beside it in `app.meta.yaml` and as a comment in the compose file. This is the documented
+   escape hatch, not a default.
 
 ## Record the result
 
 Write the final minimal set into `app.meta.yaml` (`caps_added`, `tmpfs_paths`, `read_only` per
 service) and mirror them as comments in `docker-compose.yml`. The recorded set is the audit trail —
-someone must be able to see exactly what was loosened and why.
+someone must be able to see exactly what was loosened and why. Once every service has been through
+the loop, set `hardening_verified: true` (and drop any `UNVERIFIED` comments the loop resolved).
 
 ## Assisted-mode etiquette
 
 Give copy-pasteable commands one block at a time, say what output you need back
-(`docker compose logs app`, `docker inspect`, `getpcaps`), and wait. Diagnose from the pasted
+(`docker compose logs <service>`, `docker inspect`, `getpcaps`), and wait. Diagnose from the pasted
 output; don't guess ahead of the logs.

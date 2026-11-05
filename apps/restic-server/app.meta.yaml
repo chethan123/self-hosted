@@ -1,4 +1,4 @@
-# Machine-readable contract for this app. Drives global-route generation, linting, and docs.
+# This app's contract and deviation audit trail (AGENTS.md, app.meta.yaml). Parsed by nothing yet.
 # `/harden-container` has not run — see hardening_verified below.
 name: restic-server
 hostname: backup          # subdomain only; full host is backup.{BASE_DOMAIN}

@@ -14,8 +14,8 @@ shared, TLS-terminating Global Caddy.
 | `docs/adr/` | why the architecture is the way it is (ADR 0001–0006) |
 | `docs/specs/` | full designs: restic-server, backup-sidecar |
 | `CONTEXT.md` | domain glossary |
-| `CLAUDE.md` | conventions + golden rules |
-| `.claude/skills/` | `/onboard-app`, `/harden-container` |
+| `AGENTS.md` | conventions + golden rules (`CLAUDE.md` is a symlink to it) |
+| `.agents/skills/` | `/onboard-app`, `/harden-container`, plus vendored skills; `.claude/skills/` symlinks here |
 
 ## First-time setup
 
@@ -48,4 +48,4 @@ docker compose up -d
 - Hardened by default (`read_only`, `cap_drop:[ALL]`, non-root); loosen per-app with a recorded reason.
 - The real base domain is never committed — it's `{$BASE_DOMAIN}` from a gitignored `.env`.
 - Every app ships its own backup: `docker-compose.backup.yml` + the `backup` sidecar, non-root,
-  databases dumped not copied (ADR-0006, `docs/specs/backup-sidecar.md`).
+  databases dumped not copied (ADR-0006, `docs/specs/backup-sidecar.md`). Rollout status: `AGENTS.md`, Backups.

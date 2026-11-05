@@ -1,7 +1,7 @@
 # Wildcard cert via DNS-01, subdomain-per-app routing
 
 Each Global Caddy obtains a single wildcard certificate for `*.{$BASE_DOMAIN}` and routes each app
-by subdomain (`photos.` -> immich, `drive.` -> seafile, ...). One wildcard cert covers every app
+by subdomain (`photos.` -> immich, `files.` -> seafile, ...). One wildcard cert covers every app
 regardless of count, which sidesteps Let's Encrypt duplicate-certificate rate limits that would
 otherwise bite with multiple Global Caddy instances each issuing per-hostname certs.
 
@@ -13,7 +13,7 @@ lacks it — build with `xcaddy`), and the DNS API token is stored as a file-sec
 `<host>.{$BASE_DOMAIN} { … }` blocks would each get their own cert — defeating this ADR. So the
 `Caddyfile` has exactly one `*.{$BASE_DOMAIN}` site block that imports `tls_wildcard` (obtains the
 wildcard) and `security_headers`; each app's route is a host-matcher **fragment**
-(`@name host … / handle @name { reverse_proxy … }`) in `sites/<app>.caddy`, imported *inside* that
+(`@name host … / handle @name { reverse_proxy … }`) in `sites/<hostname>.caddy`, imported *inside* that
 block via `import sites/*.caddy`. No app block, no per-app cert. Two-label zones (e.g. `*.blr`,
 `*.drive`) are not covered by a single-label wildcard and each get their own dedicated wildcard block.
 

@@ -1,8 +1,8 @@
-# CLAUDE.md — self-hosted monorepo
+# AGENTS.md — self-hosted monorepo
 
 Collection of every self-hosted app as a standalone `docker compose` stack, one directory per app,
 each deployed to its own Proxmox VM. **Private** GitHub repo. Read `CONTEXT.md` (glossary) and
-`docs/adr/` (the *why*) before changing conventions.
+`docs/adr/` (the *why*) before changing conventions. `CLAUDE.md` is a symlink to this file — edit here.
 
 ## Golden rules (never violate)
 
@@ -21,11 +21,15 @@ each deployed to its own Proxmox VM. **Private** GitHub repo. Read `CONTEXT.md` 
 ```
 apps/<name>/         one app package (see apps/_template/ for the canonical shape)
 global-caddy/        the shared public reverse proxy; sparse-checked-out to each Caddy VM
+  sites/             one route fragment per hostname
+  ca/                pinned upstream CAs (restic-server's internal root)
 images/backup-sidecar/  the one backup image every app runs; released by .github/workflows/
 docs/adr/            architecture decision records (0001-0006)
 docs/specs/          full designs (restic-server, backup-sidecar)
 CONTEXT.md           domain glossary
-.agents/skills/      onboard-app, harden-container
+.agents/skills/      every skill's source: house (onboard-app, harden-container) + vendored
+                     (pinned in skills-lock.json)
+.claude/skills/      symlinks into .agents/skills/ — never a copy
 ```
 
 Each app VM sparse-checks-out only its own `apps/<name>/`. Caddy VMs sparse-check-out `global-caddy/`.
@@ -34,19 +38,28 @@ Each app VM sparse-checks-out only its own `apps/<name>/`. Caddy VMs sparse-chec
 
 - **Nested Caddy** (ADR-0001): `client --https--> Global Caddy (TLS) --http--> Sidecar Caddy --> app`.
   The Sidecar is the per-app inbound security edge and the only LAN-exposed port on the VM.
+  One exception: `restic-server`'s Sidecar terminates TLS itself on `:443` (`tls internal`) and the
+  Global Caddy pins its root from `global-caddy/ca/` — it carries every app's backup credential
+  (`docs/specs/restic-server.md` D10).
 - **Routing** (ADR-0002): multiple Global Caddy instances, round-robin DNS, static-IP routing.
-  Each app owns `global-caddy/sites/<name>.caddy` — a host-matcher **fragment**
-  (`@name host <subdomain>.{$BASE_DOMAIN}` + `handle @name { reverse_proxy <vm_ip>:<port> }`), imported
-  *inside* the shared `*.{$BASE_DOMAIN}` block via `import sites/*.caddy` so all apps reuse one
-  wildcard cert (ADR-0005). Not a standalone site block — that would issue a per-host cert.
-- **TLS** (ADR-0005): wildcard `*.{$BASE_DOMAIN}` cert via DNS-01; subdomain-per-app. Needs a Caddy
-  image built with the DNS module (`xcaddy`).
+  Each hostname has one `global-caddy/sites/<hostname>.caddy` — a host-matcher **fragment**
+  (`@<hostname> host <hostname>.{$BASE_DOMAIN}` + `handle @<hostname> { reverse_proxy <vm_ip>:<port> }`),
+  imported *inside* the shared `*.{$BASE_DOMAIN}` block via `import sites/*.caddy` so all routes reuse
+  one wildcard cert (ADR-0005). Not a standalone site block — that would issue a per-host cert.
+  Named after the subdomain, not the app (`audiobooks.caddy` → audiobookshelf); an app serving N
+  subdomains owns N fragments (jellyfin: `tv`, `metube`, `jellyshare`, `jellystats`). Most fragments
+  route to hosts that are not packages here (DNS, Proxmox, the router, Tailscale peers).
+- **TLS** (ADR-0005): wildcard `*.{$BASE_DOMAIN}` cert via DNS-01; subdomain-per-app. Two-label
+  zones (`*.blr`, `*.drive`) get their own wildcard block in `global-caddy/Caddyfile` — three certs.
+  Needs a Caddy image built with the DNS module (`xcaddy`).
 - **Naming**: the app service is named after the app slug — never `app` — because that name is what
   the Sidecar `reverse_proxy`es to (Compose registers the *service* name as the network alias).
   Every service also sets an explicit `container_name:` so `docker ps` reads the same on every VM:
   `caddy-<app>` for the Sidecar, the service name verbatim for everything else. Plain `caddy` is
   reserved for the Global Caddy. `container_name:` is cosmetic — it changes no DNS, but it does
   make the name host-global and rule out `--scale` (fine: one app per VM, nothing is replicated).
+  Recorded exceptions: jellyfin (runs in gluetun's namespace), restic-server (three upstreams),
+  portfolio (upstream's `app`).
 
 ## Per-app networks (three, per VM)
 
@@ -65,6 +78,14 @@ App has **no egress unless `needs_egress: true`** (which adds it to `edge`). DB 
 `tmpfs` · `pids_limit` / `mem_limit` / `cpus` · pinned image tags · never `privileged`, never the
 Docker socket. Discover the minimal caps/tmpfs with the `harden-container` skill; record them in
 `app.meta.yaml`.
+
+House-wide exceptions, not yet tightened:
+- **Sidecar Caddy**: `read_only: false`, and the template sets no limits on it.
+- **Database engines** (postgres, mariadb): entrypoint starts as root with
+  `CHOWN SETUID SETGID DAC_OVERRIDE FOWNER`, then drops to its own user.
+
+Status: `/harden-container` has not run against any package — every `app.meta.yaml` says
+`hardening_verified: false`. Treat its caps/tmpfs lists as a starting posture, not a measurement.
 
 ## Secrets (hybrid)
 
@@ -94,6 +115,12 @@ that pushes `/backup` to every restic-server target on a per-app schedule. Rules
   `backup-{nfs,rsync-net,pcloud}.env` — and one Uptime Kuma push per run (`BACKUP_PING_URL`).
 - `secrets/` and `.env` may be in the set (the repository is encrypted); rotation ≠ purge.
 
+Rollout status — the rule above is the target, not yet the fleet:
+- Only `portfolio` (the reference) carries `docker-compose.backup.yml`. `audiobookshelf`,
+  `jellyfin`, `restic-server` and `seafile` predate ADR-0006 and have none — adding one is open work.
+- The image is published only by pushing a `backup-sidecar/v*` git tag; until `backup-sidecar/v1.0.0`
+  is pushed, the `:1.0.0` every package pins does not exist on ghcr.
+
 Mechanics, restore, and the dump contract: `docs/specs/backup-sidecar.md`.
 
 ## NFS volumes (optional)
@@ -115,9 +142,12 @@ Do not hand-scaffold — the skills enforce the invariants above.
 
 ## app.meta.yaml
 
-The machine-readable per-app contract (routing + hardening + backup decisions). Keep it in sync
-with both compose files; it is the audit trail for every deviation from the defaults. See
-`apps/_template/app.meta.yaml`.
+The per-app contract (routing + hardening + backup decisions) and the audit trail for every
+deviation from the defaults. Keep it in sync with both compose files. Nothing parses it yet —
+correctness is by review. Base shape: `apps/_template/app.meta.yaml`. Packages extend it where the
+base shape can't say something (`routes:` for multi-upstream sidecars, `deviations:`,
+`upstream_edits:`, per-service flags like `unprivileged_port_bind`); reuse an existing extension
+before inventing one.
 
 ## Comments
 
