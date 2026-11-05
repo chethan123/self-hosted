@@ -20,7 +20,7 @@ VM only**. A Cloudflare token scoped to `Zone:DNS:Edit` for your zone is enough 
 **One wildcard cert per zone**, not one per subdomain. The `Caddyfile` has a single
 `*.{$BASE_DOMAIN}` block that obtains the wildcard cert (`tls_wildcard`) and applies shared
 `security_headers`; every single-label subdomain is a **host-matcher fragment** in
-`sites/<name>.caddy`, imported inside that block:
+`sites/<hostname>.caddy`, imported inside that block:
 ```caddy
 # sites/photos.caddy
 @photos host photos.{$BASE_DOMAIN}
@@ -36,7 +36,7 @@ Two-label zones aren't covered by a single-label wildcard, so they get their own
 the `Caddyfile`: `*.blr.{$BASE_DOMAIN}` (qbit.blr, tv.blr) and `*.drive.{$BASE_DOMAIN}`. Net result:
 **3 wildcard certs** total.
 
-`/onboard-app` appends a fragment here per app. After committing + pulling on each Caddy VM:
+`/onboard-app` adds a fragment here per hostname — named after the subdomain, not the app. After committing + pulling on each Caddy VM:
 ```bash
 docker exec caddy caddy reload --config /etc/caddy/Caddyfile
 ```

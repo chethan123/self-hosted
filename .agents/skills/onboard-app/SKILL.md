@@ -57,14 +57,15 @@ are the user's. Do not run anything until the package is scaffolded and confirme
      database — and the `backup`/`dump` entries under `services:`.
    - Write `README.md` from the template.
 3. **Write the global route** as a host-matcher **fragment** (NOT a standalone site block) at
-   `global-caddy/sites/<name>.caddy`. It is imported *inside* the shared `*.{$BASE_DOMAIN}` block so
+   `global-caddy/sites/<hostname>.caddy` — named after the subdomain, not the app; one fragment per
+   subdomain the app serves (jellyfin owns four). It is imported *inside* the shared `*.{$BASE_DOMAIN}` block so
    every app reuses the single wildcard cert (ADR-0005). Do **not** wrap it in
    `<host>.{$BASE_DOMAIN} { … }` and do **not** re-`import tls_wildcard`/`security_headers` — those
    are inherited from the enclosing block, and a standalone block would trigger a separate per-host
    cert (the exact thing ADR-0005 avoids):
    ```caddy
-   @<name> host <hostname>.{$BASE_DOMAIN}
-   handle @<name> {
+   @<hostname> host <hostname>.{$BASE_DOMAIN}
+   handle @<hostname> {
        reverse_proxy <vm_ip>:<sidecar_port>
    }
    ```
@@ -96,7 +97,7 @@ are the user's. Do not run anything until the package is scaffolded and confirme
    - Add the hardening baseline (cap_drop, no-new-privileges, non-root, limits, read_only).
    - Preserve any NFS volumes; record them under `nfs_volumes` and set the mount to `:ro` unless the
      original clearly wrote to them (then `:rw`) — confirm each `access` with the user.
-   - Generate the sidecar `Caddyfile` and the `global-caddy/sites/<name>.caddy` route **fragment**
+   - Generate the sidecar `Caddyfile` and the `global-caddy/sites/<hostname>.caddy` route **fragment**
      (host-matcher form, per `new` step 3 — never a standalone block).
    - Add `docker-compose.backup.yml` from the template as in `new` step 2 — the imported compose
      file is not edited for it; `COMPOSE_FILE` in `.env.example` merges it. If the stack already
@@ -113,7 +114,8 @@ are the user's. Do not run anything until the package is scaffolded and confirme
 - No service is named `app`; every service sets `container_name:` (`caddy-<name>` for the sidecar).
 - No real secret value in any committed file; `.env`, `secrets/`, `volumes/` stay gitignored.
 - Every key in `.env` has a placeholder in `.env.example`.
-- `read_only: true` unless the app's README documents why it was disabled.
+- `read_only: true` unless `app.meta.yaml` records why it was disabled.
+- `hardening_verified: false` until `/harden-container` has measured every service.
 - Every `nfs_volumes` entry has a matching top-level `volumes:` definition and a container mount
   whose `:ro`/`:rw` suffix matches its `access` (default `:ro`). NFS options stay `soft`.
 - Every package has `docker-compose.backup.yml` and `COMPOSE_FILE=…` in `.env.example`; the

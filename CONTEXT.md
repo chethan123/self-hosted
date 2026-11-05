@@ -22,8 +22,8 @@ concerns (headers, auth, rate limits, path rules) and is the only LAN-exposed po
 _Avoid_: local proxy, app proxy
 
 **Global-route snippet**:
-A per-app file in `global-caddy/sites/<app>.caddy` declaring `subdomain -> VM-IP:port`.
-Aggregated by the Global Caddy via `import`.
+A per-hostname file in `global-caddy/sites/<hostname>.caddy` declaring `subdomain -> VM-IP:port`.
+An app serving several subdomains owns several. Aggregated by the Global Caddy via `import`.
 _Avoid_: route config, vhost
 
 **edge / frontend / backend**:
@@ -38,7 +38,8 @@ _Avoid_: internet-enabled, online
 
 **app.meta.yaml**:
 The machine-readable contract for an app package: hostname, VM IP, port, image type, egress,
-and the hardening decisions (caps added, tmpfs paths). Drives linting and documentation.
+and the hardening and backup decisions (caps added, tmpfs paths, backup set). The audit trail for
+every deviation; read by humans and agents, parsed by nothing yet.
 _Avoid_: manifest, config, descriptor
 
 **Onboard**:

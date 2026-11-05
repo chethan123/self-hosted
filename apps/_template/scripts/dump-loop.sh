@@ -40,7 +40,7 @@ stamp() { date -u +%Y%m%dT%H%M%SZ; }
 # bashism this shell does not have. Strip the zero instead.
 strip0() { v=${1#0}; printf '%s\n' "${v:-0}"; }
 
-# Fails closed and names the variable (.env.example's promise). No DUMP_UID/DUMP_GID here —
+# Fails closed and names the variable (.env.example's promise). No BACKUP_UID/BACKUP_GID here —
 # Compose applies them before this script runs. Checked alone, first: disabling dumps must work even if other inputs are bad.
 validate_enabled() {
   case "$DUMP_ENABLED" in
@@ -66,7 +66,7 @@ validate() {
     *) die "DUMP_COMPRESS must be 0-9 or none, not '$DUMP_COMPRESS'" ;;
   esac
   [ "$(id -u)" != "0" ] ||
-    die "refusing to run as root; set DUMP_UID and DUMP_GID to the account that owns $DUMP_DIR"
+    die "refusing to run as root; set BACKUP_UID and BACKUP_GID to the account that owns $DUMP_DIR"
   [ -n "${DATABASE_URL:-}" ] || die "DATABASE_URL is required"
   # Only dumps the bundled `db` service — a package on an external Postgres deletes `db` and
   # this service with it.

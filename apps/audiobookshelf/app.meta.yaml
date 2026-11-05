@@ -1,4 +1,4 @@
-# Machine-readable contract for this app. Drives global-route generation, linting, and docs.
+# This app's contract and deviation audit trail (AGENTS.md, app.meta.yaml). Parsed by nothing yet.
 # `/onboard-app` fills the routing fields; `/harden-container` fills caps_added / tmpfs_paths.
 name: audiobookshelf
 hostname: audiobooks      # subdomain only; full host is <hostname>.{BASE_DOMAIN}

@@ -41,8 +41,8 @@
 }
 
 # ── Primary zone: one *.{$BASE_DOMAIN} wildcard cert, shared by every single-label subdomain ──
-# Per-app routes are host-matcher fragments in sites/<name>.caddy, imported here.
-# `/onboard-app` appends a fragment per app (see sites/README pattern).
+# Per-app routes are host-matcher fragments in sites/<hostname>.caddy, imported here.
+# `/onboard-app` adds one fragment per hostname (README.md, "Routes & TLS strategy").
 *.{$BASE_DOMAIN} {
 	import tls_wildcard
 	import security_headers

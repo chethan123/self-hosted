@@ -7,8 +7,8 @@ stack on a dedicated Proxmox VM with a reserved static IP; the Global Caddy rout
 
 Routing config is **static and hand-maintained**, not discovered: dynamic mechanisms
 (caddy-docker-proxy, Docker labels) can't work because each Global Caddy is on a different VM and
-cannot see another VM's Docker daemon. Each app contributes a `global-caddy/sites/<app>.caddy`
-snippet, aggregated via `import sites/*.caddy`; all Global Caddy VMs stay identical by
+cannot see another VM's Docker daemon. Each app contributes one `global-caddy/sites/<hostname>.caddy`
+snippet per subdomain it serves, aggregated via `import sites/*.caddy`; all Global Caddy VMs stay identical by
 sparse-cloning the `global-caddy/` directory from this repo.
 
 Rejected: Docker Swarm / overlay networking (over-engineered for a home lab; fights the

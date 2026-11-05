@@ -1,4 +1,4 @@
-# Machine-readable contract: drives global-route generation, linting, docs.
+# Contract + deviation audit trail (AGENTS.md, app.meta.yaml). Parsed by nothing yet — keep in sync by hand.
 # `/onboard-app` fills routing fields; `/harden-container` fills caps_added / tmpfs_paths.
 name: example-app
 hostname: photos          # subdomain only; full host = <hostname>.{BASE_DOMAIN}
@@ -7,6 +7,9 @@ sidecar_port: 80          # host port sidecar publishes
 
 needs_egress: false       # true -> app joins `edge` network
 secrets_mode: hybrid      # env | file-secrets | hybrid
+
+# false until /harden-container has run against this package and measured the lists below.
+hardening_verified: false
 
 # Keys must match compose service names.
 services:
