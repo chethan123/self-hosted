@@ -12,6 +12,10 @@ git show backup-2026-11-20:<path>              # read an old file
 git checkout backup-2026-11-20 -- <path>       # bring one back
 ```
 
+**A VM that checked out `global-caddy/` or an `apps/` directory from `main` must not `git pull`.**
+Those files are gone from `main`, so a pull deletes the config under a running container. Pin it to
+the snapshot first: `git checkout backup-2026-11-20`.
+
 To decide the baseline with an agent: *"Read BASELINE.md and walk me through the open items."*
 
 Kept on `main`: `.gitignore` (keeps `.env`, `secrets/*` and `volumes/` out of git) and the gitleaks

@@ -809,7 +809,9 @@ password and full storage credentials.
 - `sites/`: 35 fragments (F1)
 - `ca/`: empty
 
-**State.** It presumably runs today in some form; the repo does not record the nodes.
+**State.** It presumably runs today in some form; the repo does not record the nodes. A node that
+checks out `global-caddy/` from `main` must be pinned to `backup-2026-11-20` before any `git pull`.
+On `main` the directory is gone, and a reload after the pull would fail.
 
 **Proposed baseline.** P3 and P4. Back up `volumes/data`, or accept re-issuing certificates.
 
