@@ -1,4 +1,0 @@
-@router host router.{$BASE_DOMAIN}
-handle @router {
-	reverse_proxy 10.1.1.1:80
-}

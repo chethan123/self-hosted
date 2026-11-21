@@ -1,4 +1,0 @@
-@jellystats host jellystats.{$BASE_DOMAIN}
-handle @jellystats {
-	reverse_proxy 10.1.1.2:80
-}

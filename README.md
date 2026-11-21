@@ -1,51 +1,26 @@
 # self-hosted
 
-A private monorepo of self-hosted applications. Each app is a standalone `docker compose` stack in
-its own directory, deployed to a dedicated Proxmox VM, fronted by a per-app Caddy sidecar behind a
-shared, TLS-terminating Global Caddy.
+Self-hosted apps, each a Docker Compose stack on its own Proxmox VM. **Being rebuilt.**
 
-## Layout
-
-| Path | What |
-|---|---|
-| `apps/<name>/` | one app package (`apps/_template/` is the canonical shape) |
-| `global-caddy/` | the shared public reverse proxy (wildcard TLS, subdomain routing) |
-| `images/backup-sidecar/` | the backup sidecar image every app runs (ADR-0006) |
-| `docs/adr/` | why the architecture is the way it is (ADR 0001–0006) |
-| `docs/specs/` | full designs: restic-server, backup-sidecar |
-| `CONTEXT.md` | domain glossary |
-| `AGENTS.md` | conventions + golden rules (`CLAUDE.md` is a symlink to it) |
-| `.agents/skills/` | `/onboard-app`, `/harden-container`, plus vendored skills; `.claude/skills/` symlinks here |
-
-## First-time setup
+The previous design is on branch `backup-2026-11-20`: five app packages, the Global Caddy, a backup
+sidecar image, ADRs, specs and agent skills. None of it was ever deployed from this repo.
+[`BASELINE.md`](BASELINE.md) records what existed, its state, and a proposed baseline for each part,
+with the questions still to decide. Start there.
 
 ```bash
-pip install pre-commit && pre-commit install   # enable gitleaks secret scanning
+git show backup-2026-11-20:<path>              # read an old file
+git checkout backup-2026-11-20 -- <path>       # bring one back
 ```
 
-## Add an app
+**A VM that checked out `global-caddy/` or an `apps/` directory from `main` must not `git pull`.**
+Those files are gone from `main`, so a pull deletes the config under a running container. Pin it to
+the snapshot first: `git checkout backup-2026-11-20`.
 
-In Claude Code, run **`/onboard-app`** — mode `new` to scaffold from scratch, or
-`migrate <path-to-existing-stack>` to import an ad-hoc compose stack into the standard. It
-interviews you, scaffolds the package, writes the global route, and runs the hardening loop
-(`/harden-container`).
+To decide the baseline with an agent: *"Read BASELINE.md and walk me through the open items."*
 
-## Deploy an app (on its VM)
+Kept on `main`: `.gitignore` (keeps `.env`, `secrets/*` and `volumes/` out of git) and the gitleaks
+pre-commit hook. Enable it once per clone:
 
 ```bash
-git clone --filter=blob:none --sparse <repo> && cd <repo>
-git sparse-checkout set apps/<name>
-cd apps/<name>
-cp .env.example .env                 # fill in real values (COMPOSE_FILE pulls in docker-compose.backup.yml)
-# create any secrets/*.txt file-secrets, plus the four backup secrets (the app's README)
-docker compose up -d
+pip install pre-commit && pre-commit install
 ```
-
-## Non-negotiables
-
-- Never commit `.env`, `secrets/*`, or `volumes/` (gitignored; gitleaks guards commits).
-- Only Caddy publishes host ports. Apps and DBs stay on internal Docker networks.
-- Hardened by default (`read_only`, `cap_drop:[ALL]`, non-root); loosen per-app with a recorded reason.
-- The real base domain is never committed — it's `{$BASE_DOMAIN}` from a gitignored `.env`.
-- Every app ships its own backup: `docker-compose.backup.yml` + the `backup` sidecar, non-root,
-  databases dumped not copied (ADR-0006, `docs/specs/backup-sidecar.md`). Rollout status: `AGENTS.md`, Backups.

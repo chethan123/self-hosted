@@ -1,4 +1,0 @@
-@jellyshare host jellyshare.{$BASE_DOMAIN}
-handle @jellyshare {
-	reverse_proxy 10.1.1.2:80
-}

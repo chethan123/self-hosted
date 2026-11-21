@@ -1,4 +1,0 @@
-@getshows host getshows.{$BASE_DOMAIN}
-handle @getshows {
-	reverse_proxy 10.1.1.99:8989
-}
